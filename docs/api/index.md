@@ -14,10 +14,11 @@ The [capability index](capabilities.md) lists every public name on one page, wit
 
 | Module | Contents |
 |---|---|
+| [Adjoints](adjoint.md) | `KStep`, `OneStep` |
 | [Type aliases](typing.md) | `Objective`, `Residuals` |
 | [Exceptions](exceptions.md) | `ArgminaxError`, `ValidationError`, `MissingExtraError` |
 
-`argminax.adjoint` and `argminax.curvature` arrive in Wave 1, `argminax.diagnose` in Wave 2 and `argminax.solve` in Wave 3, each with its own page.
+`argminax.curvature` arrives in Wave 1, `argminax.diagnose` in Wave 2 and `argminax.solve` in Wave 3, each with its own page.
 
 ## Package overview
 
