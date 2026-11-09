@@ -195,8 +195,9 @@ def gauss_newton(
         jac: How J_r is reached: ``"fwd"`` (Jacobian-vector products) or
             ``"bwd"`` (vector-Jacobian products).
         solver: The gaussx strategy for the posterior; default
-            `gaussx.DenseSolver` when dense, `gaussx.CGSolver` with
-            rtol = atol = 1e-10 when matrix-free.
+            `gaussx.DenseSolver` when dense, `gaussx.CGSolver` when
+            matrix-free, with rtol = atol = max(1e-10, 100 ε_mach) for the
+            dtype of x̂ (1e-10 in float64, about 1e-5 in float32).
 
     Returns:
         The posterior N(x̂, Ĥ⁻¹).
@@ -244,7 +245,11 @@ def gauss_newton(
     if not use_dense:
         # Ĥ v = J_rᵀ (J_r v), PSD-tagged by gaussx
         precision = gx.gauss_newton_operator(flat_residuals, mode, jac=jac)
-        strategy = gx.CGSolver(rtol=1e-10, atol=1e-10) if solver is None else solver
+        # 1e-10 in float64, 100 ε_mach (about 1e-5) in float32
+        tolerance = max(1e-10, 100.0 * float(jnp.finfo(mode.dtype).eps))
+        strategy = (
+            gx.CGSolver(rtol=tolerance, atol=tolerance) if solver is None else solver
+        )
         return Laplace(mode, precision, strategy)
 
     differentiate = jax.jacfwd if jac == "fwd" else jax.jacrev

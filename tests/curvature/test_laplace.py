@@ -121,6 +121,15 @@ def test_float32_stays_float32() -> None:
     assert posterior.sample(4, key=jax.random.key(0)).dtype == jnp.float32
 
 
+def test_float32_matrix_free_converges() -> None:
+    # well conditioned, but a float64 CG tolerance would never be met in float32
+    problem = linear_gaussian_problem(jax.random.key(11), 20, 30, dtype=jnp.float32)
+    posterior = gauss_newton(whitened_residuals(problem), problem.x_hat, dense=False)
+    covariance = posterior.covariance().as_matrix()
+    assert covariance.dtype == jnp.float32
+    assert _relative(covariance, problem.S_hat) <= 1e-4
+
+
 # --- push_forward ---
 
 
