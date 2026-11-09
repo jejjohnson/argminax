@@ -14,7 +14,7 @@ The [capability index](capabilities.md) lists every public name on one page, wit
 
 | Module | Contents |
 |---|---|
-| [Adjoints](adjoint.md) | `KStep`, `OneStep` |
+| [Adjoints](adjoint.md) | `KStep`, `OneStep`, `to_optimistix_adjoint` |
 | [Type aliases](typing.md) | `Objective`, `Residuals` |
 | [Exceptions](exceptions.md) | `ArgminaxError`, `ValidationError`, `MissingExtraError` |
 

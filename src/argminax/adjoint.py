@@ -10,14 +10,18 @@ solver that stops before it converges, as learned 4D-Var does. Each is an
 |---|---|
 | `KStep` | the last k iterate updates |
 | `OneStep` | the last iterate update (k = 1) |
+
+`to_optimistix_adjoint` turns a pipekit-cycle adjoint spec into the optimistix
+adjoint that implements it.
 """
 
 from __future__ import annotations
 
-from argminax._src.adjoint import KStep, OneStep
+from argminax._src.adjoint import KStep, OneStep, to_optimistix_adjoint
 
 
 __all__ = [
     "KStep",
     "OneStep",
+    "to_optimistix_adjoint",
 ]
