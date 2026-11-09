@@ -64,8 +64,9 @@ class Laplace(eqx.Module):
         ...     jnp.zeros(2),
         ...     lx.TaggedLinearOperator(precision, lx.positive_semidefinite_tag),
         ... )
-        >>> posterior.covariance().mv(jnp.ones(2))
-        Array([0.5 , 0.25], dtype=float64)
+        >>> covariance = posterior.covariance().mv(jnp.ones(2))
+        >>> bool(jnp.allclose(covariance, jnp.array([0.5, 0.25])))
+        True
 
         A precision without the tag is rejected, since sampling and the
         default solves rely on it.
@@ -213,8 +214,8 @@ def gauss_newton(
         >>> def residuals(x, y):
         ...     return y - x, x
         >>> posterior = gauss_newton(residuals, jnp.array([0.5]), jnp.array([1.0]))
-        >>> posterior.covariance().as_matrix()
-        Array([[0.5]], dtype=float64)
+        >>> bool(jnp.allclose(posterior.covariance().as_matrix(), 0.5))
+        True
 
         The matrix-free path gives the same covariance.
 
@@ -288,8 +289,8 @@ def push_forward(
         ...     lx.DiagonalLinearOperator(jnp.array([2.0])),
         ...     jnp.array([1.0]),
         ... )
-        >>> physical.mode
-        Array([1.8], dtype=float64)
+        >>> bool(jnp.allclose(physical.mode, 1.8))
+        True
         >>> bool(jnp.allclose(physical.covariance().as_matrix(), 4.0 / 5.0))
         True
     """
