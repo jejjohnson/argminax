@@ -7,10 +7,7 @@
 #
 # Scopes below map file paths to the standard taxonomy:
 #   area:*   — which part of the project the change touches
-#   layer:*  — which implementation layer (if the project has a layer stack)
 #   type:*   — left to issue templates (NOT auto-applied on PRs)
-#
-# Adjust paths under layer:* to match your project's internal module layout.
 
 "area:engineering":
   - changed-files:
@@ -32,41 +29,34 @@
   - changed-files:
     - any-glob-to-any-file: "tests/**"
 
-# Catch-all for source changes that don't match a specific layer scope.
-# Ensures every `src/**` PR receives at least one area label.
-"area:code":
-  - changed-files:
-    - any-glob-to-any-file: "src/**"
-
-# --- Layer scopes — edit to match your project's layer stack --------------
-# The bundled demo package has a strict one-way dependency chain, and these
-# globs mirror it. Rename or delete them to match your own module layout.
-#
-#   layer:0-primitives  types, errors, validators — depend on nothing
-#   layer:1-components  the computational core — depends on primitives
-#   layer:2-models      user-facing composition — depends on the core
-
-"layer:0-primitives":
+# One area per public module: the public re-export and its private tree under _src.
+"area:solve":
   - changed-files:
     - any-glob-to-any-file:
-      - "src/**/_typing.py"
-      - "src/**/exceptions.py"
-      - "src/**/utils.py"
-      - "src/**/_primitives/**"
+      - "src/argminax/solve.py"
+      - "src/argminax/solve/**"
+      - "src/argminax/_src/solve/**"
 
-"layer:1-components":
+"area:curvature":
   - changed-files:
     - any-glob-to-any-file:
-      - "src/**/stats.py"
-      - "src/**/smoothing.py"
-      - "src/**/_components/**"
+      - "src/argminax/curvature.py"
+      - "src/argminax/curvature/**"
+      - "src/argminax/_src/curvature/**"
 
-"layer:2-models":
+"area:diagnose":
   - changed-files:
     - any-glob-to-any-file:
-      - "src/**/transforms.py"
-      - "src/**/cli.py"
-      - "src/**/_models/**"
+      - "src/argminax/diagnose.py"
+      - "src/argminax/diagnose/**"
+      - "src/argminax/_src/diagnose/**"
+
+"area:adjoint":
+  - changed-files:
+    - any-glob-to-any-file:
+      - "src/argminax/adjoint.py"
+      - "src/argminax/adjoint/**"
+      - "src/argminax/_src/adjoint/**"
 
 # --- Default / legacy labels retained for Dependabot compatibility ---------
 
