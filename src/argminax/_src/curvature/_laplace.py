@@ -34,6 +34,15 @@ _DENSE_THRESHOLD = 1000
 _PSD_TAGS = frozenset({lx.symmetric_tag, lx.positive_semidefinite_tag})
 
 
+def _tagged_diagonal(
+    operator: lx.AbstractLinearOperator,
+) -> lx.DiagonalLinearOperator | None:
+    """The diagonal operator under any tags, or ``None`` if it is not one."""
+    while isinstance(operator, lx.TaggedLinearOperator):
+        operator = operator.operator
+    return operator if isinstance(operator, lx.DiagonalLinearOperator) else None
+
+
 class Laplace(eqx.Module):
     """The Gaussian N(x̂, Ŝ) at a minimum, with Ŝ = Ĥ⁻¹ never formed.
 
@@ -123,15 +132,21 @@ class Laplace(eqx.Module):
 
             Ŝ v = Ĥ⁻¹ v
 
-        With `gaussx.DenseSolver` on a vector mode, or a lineax solver in
-        `gaussx.LineaxSolver`, this is `gaussx.inv`, which keeps the
-        structure of Ĥ (a diagonal, a low-rank update, a Kronecker product
-        is inverted in closed form) and falls back to that solver. Any other
-        strategy applies Ŝ by one solve with Ĥ per product.
+        A diagonal Ĥ (tagged PSD, as `Laplace` requires) is inverted in
+        closed form with any strategy. Otherwise, with `gaussx.DenseSolver`
+        on a vector mode, or a lineax solver in `gaussx.LineaxSolver`, this
+        is `gaussx.inv`, which keeps the structure of Ĥ (a low-rank update, a
+        Kronecker product is inverted in closed form) and falls back to that
+        solver. Any other strategy applies Ŝ by one solve with Ĥ per product.
 
         Returns:
             Ŝ, a lazy operator tagged symmetric and positive semidefinite.
         """
+        diagonal = _tagged_diagonal(self.precision)
+        if diagonal is not None:
+            # a diagonal Ĥ, tagged PSD, is inverted in closed form: gaussx.inv
+            # does not look through the tag, so it is peeled here
+            return lx.TaggedLinearOperator(gx.inv(diagonal), _PSD_TAGS)
         if isinstance(self.solver, gx.LineaxSolver):
             return gx.inv(self.precision, solver=self.solver.solver)
         if isinstance(self.solver, gx.DenseSolver) and jnp.ndim(self.mode) == 1:

@@ -278,6 +278,24 @@ def test_a_lineax_solver_keeps_the_structure_of_the_precision() -> None:
         assert jnp.allclose(gx.diag(covariance), jnp.array([0.5, 0.25, 0.125]))
 
 
+@pytest.mark.parametrize(
+    "solver",
+    [gx.DenseSolver(), gx.LineaxSolver(lx.CG(rtol=1e-8, atol=1e-8)), gx.CGSolver()],
+)
+def test_a_tagged_diagonal_is_inverted_in_closed_form(monkeypatch, solver) -> None:
+    diagonal = lx.DiagonalLinearOperator(jnp.array([2.0, 4.0, 8.0]))
+    tagged = lx.TaggedLinearOperator(diagonal, lx.positive_semidefinite_tag)
+    covariance = Laplace(jnp.zeros(3), tagged, solver).covariance()
+
+    def forbidden(self):
+        raise AssertionError("densified the covariance")
+
+    monkeypatch.setattr(lx.DiagonalLinearOperator, "as_matrix", forbidden)
+    assert lx.is_positive_semidefinite(covariance)
+    assert jnp.allclose(gx.diag(covariance), jnp.array([0.5, 0.25, 0.125]))
+    assert jnp.allclose(covariance.mv(jnp.ones(3)), jnp.array([0.5, 0.25, 0.125]))
+
+
 def test_an_iterative_strategy_solves_per_product(problem) -> None:
     posterior = gauss_newton(whitened_residuals(problem), problem.x_hat)
     iterative = Laplace(posterior.mode, posterior.precision, gx.CGSolver(1e-12, 1e-12))

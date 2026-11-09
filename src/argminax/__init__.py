@@ -15,8 +15,8 @@ operators. Four public modules arrive with the first feature that needs each:
 
 Examples:
     >>> import argminax
-    >>> argminax.__version__
-    '0.0.1'
+    >>> isinstance(argminax.__version__, str)
+    True
 """
 
 from __future__ import annotations
