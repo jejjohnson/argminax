@@ -234,6 +234,66 @@ def test_logdet_gradient_matches_finite_differences() -> None:
     assert_grad_matches_fd(log_det, jnp.array([1.3]))
 
 
+# --- gridded modes and structure ---
+
+
+def _gridded_posterior(solver):
+    shape = (2, 3)
+    factor = jax.random.normal(jax.random.key(12), (6, 6))
+    matrix = factor @ factor.T + 6.0 * jnp.eye(6)
+    precision = lx.FunctionLinearOperator(
+        lambda field: (matrix @ field.ravel()).reshape(shape),
+        jax.ShapeDtypeStruct(shape, jnp.float64),
+        lx.positive_semidefinite_tag,
+    )
+    mode = jnp.arange(6.0).reshape(shape)
+    return Laplace(mode, precision, solver), matrix
+
+
+def test_a_gridded_mode_keeps_its_shape() -> None:
+    cg = gx.LineaxSolver(lx.CG(rtol=1e-12, atol=1e-12))
+    posterior, matrix = _gridded_posterior(cg)
+    covariance = posterior.covariance()
+    field = jnp.ones((2, 3))
+    assert covariance.mv(field).shape == (2, 3)
+    expected = (jnp.linalg.inv(matrix) @ field.ravel()).reshape(2, 3)
+    assert _relative(covariance.mv(field), expected) <= 1e-10
+    _, log_det = jnp.linalg.slogdet(matrix)
+    assert _relative(posterior.logdet_precision(), log_det) <= 1e-12
+    draws = posterior.sample(10_000, key=jax.random.key(13))
+    assert draws.shape == (10_000, 2, 3)
+    centred = (draws - posterior.mode).reshape(10_000, 6)
+    assert_sample_covariance(centred, jnp.linalg.inv(matrix))
+
+
+def test_a_lineax_solver_keeps_the_structure_of_the_precision() -> None:
+    diagonal = lx.TaggedLinearOperator(
+        lx.DiagonalLinearOperator(jnp.array([2.0, 4.0, 8.0])),
+        lx.positive_semidefinite_tag,
+    )
+    for solver in (gx.DenseSolver(), gx.LineaxSolver(lx.Cholesky())):
+        covariance = Laplace(jnp.zeros(3), diagonal, solver).covariance()
+        assert lx.is_positive_semidefinite(covariance)
+        # gaussx inverts a diagonal in closed form, without a solve
+        assert jnp.allclose(gx.diag(covariance), jnp.array([0.5, 0.25, 0.125]))
+
+
+def test_an_iterative_strategy_solves_per_product(problem) -> None:
+    posterior = gauss_newton(whitened_residuals(problem), problem.x_hat)
+    iterative = Laplace(posterior.mode, posterior.precision, gx.CGSolver(1e-12, 1e-12))
+    covariance = iterative.covariance()
+    assert isinstance(covariance, lx.FunctionLinearOperator)
+    assert lx.is_positive_semidefinite(covariance)
+    assert _relative(covariance.as_matrix(), problem.S_hat) <= 1e-10
+
+
+def test_the_shapes_of_the_precision_must_match_the_mode() -> None:
+    precision = lx.IdentityLinearOperator(jax.ShapeDtypeStruct((6,), jnp.float64))
+    tagged = lx.TaggedLinearOperator(precision, lx.positive_semidefinite_tag)
+    with pytest.raises(ValidationError, match=r"of shape \(2, 3\)"):
+        Laplace(jnp.zeros((2, 3)), tagged)
+
+
 # --- validation ---
 
 
@@ -249,7 +309,9 @@ def test_jac_must_be_fwd_or_bwd(problem) -> None:
 
 def test_precision_must_match_the_mode() -> None:
     precision = lx.MatrixLinearOperator(jnp.eye(3), lx.positive_semidefinite_tag)
-    with pytest.raises(ValidationError, match="'precision' must be 2 × 2"):
+    with pytest.raises(
+        ValidationError, match=r"'precision' must map arrays of shape \(2,\)"
+    ):
         Laplace(jnp.zeros(2), precision)
 
 

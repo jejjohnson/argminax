@@ -6,6 +6,7 @@ with stochastic estimates bounded by their own sampling distribution.
 
 from __future__ import annotations
 
+import gaussx as gx
 import jax
 import jax.numpy as jnp
 import lineax as lx
@@ -19,6 +20,7 @@ from jax.scipy.linalg import solve_triangular
 
 from argminax import ValidationError
 from argminax.curvature import (
+    Laplace,
     VarianceEstimate,
     gauss_newton,
     low_rank,
@@ -187,3 +189,16 @@ def test_float32_stays_float32(dense: bool) -> None:
     assert probed.estimate.dtype == jnp.float32
     draws = sample_by_perturbation(residuals, posterior, 3, key=jax.random.key(0))
     assert draws.dtype == jnp.float32
+
+
+def test_marginal_variance_and_low_rank_need_a_vector_mode() -> None:
+    identity = lx.IdentityLinearOperator(jax.ShapeDtypeStruct((2, 3), jnp.float64))
+    posterior = Laplace(
+        jnp.zeros((2, 3)),
+        lx.TaggedLinearOperator(identity, lx.positive_semidefinite_tag),
+        gx.LineaxSolver(lx.CG(rtol=1e-8, atol=1e-8)),
+    )
+    with pytest.raises(ValidationError, match="one-dimensional mode"):
+        marginal_variance(posterior)
+    with pytest.raises(ValidationError, match="one-dimensional mode"):
+        low_rank(posterior, 1, key=jax.random.key(0))
