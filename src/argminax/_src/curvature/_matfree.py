@@ -29,6 +29,15 @@ __all__ = [
 ]
 
 
+def _require_vector_mode(posterior: Laplace) -> None:
+    if jnp.ndim(posterior.mode) != 1:
+        msg = (
+            "'posterior' must have a one-dimensional mode, got shape "
+            f"{jnp.shape(posterior.mode)}; flatten the state first"
+        )
+        raise ValidationError(msg)
+
+
 def _require_count(value: int, name: str, *, minimum: int) -> None:
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
         msg = f"'{name}' must be an integer of at least {minimum}, got {value!r}"
@@ -70,7 +79,8 @@ def marginal_variance(
         diag(Ŝ), shape (N,), without a key; a `VarianceEstimate` with one.
 
     Raises:
-        ValidationError: If ``num_probes`` is below 2.
+        ValidationError: If the mode is not one-dimensional, or
+            ``num_probes`` is below 2.
 
     Examples:
         >>> import jax
@@ -91,6 +101,7 @@ def marginal_variance(
         >>> bool(jnp.allclose(probed.stderr, 0.0))
         True
     """
+    _require_vector_mode(posterior)
     if key is None:
         return gx.diag_inv(posterior.precision, method="solve", solver=posterior.solver)
     _require_count(num_probes, "num_probes", minimum=2)
@@ -138,7 +149,8 @@ def low_rank(posterior: Laplace, rank: int, *, key: PRNGKeyArray) -> gx.LowRankU
         semidefinite.
 
     Raises:
-        ValidationError: If ``rank`` is not an integer from 1 to N.
+        ValidationError: If the mode is not one-dimensional, or ``rank`` is
+            not an integer from 1 to N.
 
     Examples:
         Three unknowns, one measurement of their sum with unit noise:
@@ -161,6 +173,7 @@ def low_rank(posterior: Laplace, rank: int, *, key: PRNGKeyArray) -> gx.LowRankU
         problems. Part I: the linearized case. SIAM J. Sci. Comput. 35(6),
         A2494–A2523. arXiv:1308.1313.
     """
+    _require_vector_mode(posterior)
     size = jnp.shape(posterior.mode)[0]
     _require_count(rank, "rank", minimum=1)
     if rank > size:

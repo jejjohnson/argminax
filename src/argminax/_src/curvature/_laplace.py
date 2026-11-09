@@ -34,26 +34,39 @@ _DENSE_THRESHOLD = 1000
 _PSD_TAGS = frozenset({lx.symmetric_tag, lx.positive_semidefinite_tag})
 
 
+def _tagged_diagonal(
+    operator: lx.AbstractLinearOperator,
+) -> lx.DiagonalLinearOperator | None:
+    """The diagonal operator under any tags, or ``None`` if it is not one."""
+    while isinstance(operator, lx.TaggedLinearOperator):
+        operator = operator.operator
+    return operator if isinstance(operator, lx.DiagonalLinearOperator) else None
+
+
 class Laplace(eqx.Module):
     """The Gaussian N(x̂, Ŝ) at a minimum, with Ŝ = Ĥ⁻¹ never formed.
 
         p(x) ≈ N(x; x̂, Ĥ⁻¹)
 
     x̂ is the mode and Ĥ the precision, a lineax operator tagged positive
-    semidefinite. The covariance, its log-determinant and samples all go
-    through ``solver``, a gaussx solver strategy, so the same posterior is
-    computed the same way by every library that builds one.
+    semidefinite whose input and output have the shape of x̂ (a vector, or a
+    gridded state such as (T, N)). The covariance, its log-determinant and
+    samples all go through ``solver``, a gaussx solve strategy, so the same
+    posterior is computed the same way by every library that builds one.
 
     Attributes:
-        mode: The mode x̂, shape (N,).
-        precision: The precision Ĥ, an (N, N) lineax operator tagged
-            positive semidefinite.
-        solver: The gaussx strategy for solves with Ĥ and its
-            log-determinant.
+        mode: The mode x̂, of any array shape.
+        precision: The precision Ĥ, a lineax operator on arrays of the shape
+            of x̂, tagged positive semidefinite.
+        solver: The gaussx strategy for solves with Ĥ: `gaussx.DenseSolver`
+            (the default), `gaussx.CGSolver`, or a lineax solver wrapped in
+            `gaussx.LineaxSolver`. A mode that is not a vector needs a lineax
+            solver or an iterative strategy, since gaussx's dense fallback
+            assumes a vector.
 
     Raises:
-        ValidationError: If ``mode`` is not one-dimensional, if ``precision``
-            is not N × N, or if it is not tagged positive semidefinite.
+        ValidationError: If the shapes of ``precision`` do not match
+            ``mode``, or if it is not tagged positive semidefinite.
 
     Examples:
         >>> import jax.numpy as jnp
@@ -68,6 +81,22 @@ class Laplace(eqx.Module):
         >>> bool(jnp.allclose(covariance, jnp.array([0.5, 0.25])))
         True
 
+        A gridded mode keeps its shape, here with a lineax CG solver.
+
+        >>> import gaussx as gx
+        >>> import jax
+        >>> grid = jax.ShapeDtypeStruct((2, 3), jnp.float32)
+        >>> identity = lx.IdentityLinearOperator(grid)
+        >>> gridded = Laplace(
+        ...     jnp.zeros((2, 3), jnp.float32),
+        ...     lx.TaggedLinearOperator(
+        ...         2.0 * identity, lx.positive_semidefinite_tag
+        ...     ),
+        ...     gx.LineaxSolver(lx.CG(rtol=1e-6, atol=1e-6)),
+        ... )
+        >>> gridded.covariance().mv(jnp.ones((2, 3), jnp.float32)).shape
+        (2, 3)
+
         A precision without the tag is rejected, since sampling and the
         default solves rely on it.
 
@@ -77,19 +106,18 @@ class Laplace(eqx.Module):
         ValidationError: 'precision' must be tagged positive semidefinite, ...
     """
 
-    mode: Float[Array, " N"]
+    mode: Float[Array, "*state"]
     precision: lx.AbstractLinearOperator
-    solver: gx.AbstractSolverStrategy = gx.DenseSolver()
+    solver: gx.AbstractSolveStrategy = gx.DenseSolver()
 
     def __check_init__(self) -> None:
-        if jnp.ndim(self.mode) != 1:
-            msg = f"'mode' must be one-dimensional, got shape {jnp.shape(self.mode)}"
-            raise ValidationError(msg)
-        size = jnp.shape(self.mode)[0]
-        if self.precision.in_size() != size or self.precision.out_size() != size:
+        shape = jnp.shape(self.mode)
+        in_shape = self.precision.in_structure().shape
+        out_shape = self.precision.out_structure().shape
+        if in_shape != shape or out_shape != shape:
             msg = (
-                f"'precision' must be {size} × {size} to match 'mode', got "
-                f"{self.precision.out_size()} × {self.precision.in_size()}"
+                f"'precision' must map arrays of shape {shape}, the shape of "
+                f"'mode', got {in_shape} to {out_shape}"
             )
             raise ValidationError(msg)
         if not lx.is_positive_semidefinite(self.precision):
@@ -104,11 +132,25 @@ class Laplace(eqx.Module):
 
             Ŝ v = Ĥ⁻¹ v
 
-        Each matrix-vector product is one solve with Ĥ through ``solver``.
+        A diagonal Ĥ (tagged PSD, as `Laplace` requires) is inverted in
+        closed form with any strategy. Otherwise, with `gaussx.DenseSolver`
+        on a vector mode, or a lineax solver in `gaussx.LineaxSolver`, this
+        is `gaussx.inv`, which keeps the structure of Ĥ (a low-rank update, a
+        Kronecker product is inverted in closed form) and falls back to that
+        solver. Any other strategy applies Ŝ by one solve with Ĥ per product.
 
         Returns:
-            Ŝ, an (N, N) operator tagged symmetric and positive semidefinite.
+            Ŝ, a lazy operator tagged symmetric and positive semidefinite.
         """
+        diagonal = _tagged_diagonal(self.precision)
+        if diagonal is not None:
+            # a diagonal Ĥ, tagged PSD, is inverted in closed form: gaussx.inv
+            # does not look through the tag, so it is peeled here
+            return lx.TaggedLinearOperator(gx.inv(diagonal), _PSD_TAGS)
+        if isinstance(self.solver, gx.LineaxSolver):
+            return gx.inv(self.precision, solver=self.solver.solver)
+        if isinstance(self.solver, gx.DenseSolver) and jnp.ndim(self.mode) == 1:
+            return gx.inv(self.precision)
         return lx.FunctionLinearOperator(
             lambda vector: self.solver.solve(self.precision, vector),
             self.precision.in_structure(),
@@ -120,37 +162,44 @@ class Laplace(eqx.Module):
 
             log |Ĥ| = −log |Ŝ|
 
-        Exact with the default `gaussx.DenseSolver`; a stochastic estimate
-        with `gaussx.CGSolver`, the default of `gauss_newton`'s matrix-free
-        path.
+        Exact with `gaussx.DenseSolver` or a solve-only strategy
+        (`gaussx.logdet`); a stochastic estimate with `gaussx.CGSolver`, the
+        default of `gauss_newton`'s matrix-free path.
 
         Returns:
             The scalar log |Ĥ|.
         """
-        return self.solver.logdet(self.precision)
+        if isinstance(self.solver, gx.AbstractSolverStrategy):
+            return self.solver.logdet(self.precision)
+        return gx.logdet(self.precision)
 
-    def sample(self, n: int, *, key: PRNGKeyArray) -> Float[Array, "n N"]:
+    def sample(self, n: int, *, key: PRNGKeyArray) -> Float[Array, "n ..."]:
         """Draw samples from N(x̂, Ŝ) by a Cholesky factor of the precision.
 
             x = x̂ + L⁻ᵀ z,   Ĥ = L Lᵀ,   z ~ N(0, I)
 
-        so Cov(x) = L⁻ᵀ L⁻¹ = Ĥ⁻¹. The factor is dense: for a state too large
-        for that, use `sample_by_perturbation`.
+        so Cov(x) = L⁻ᵀ L⁻¹ = Ĥ⁻¹. The factor is dense, over the flattened
+        state: for a state too large for that, use
+        `sample_by_perturbation`.
 
         Args:
             n: Number of draws.
             key: Random key for z.
 
         Returns:
-            The draws, shape (n, N), in the dtype of ``mode``.
+            The draws, shape (n, *x̂.shape), in the dtype of ``mode``.
         """
-        # Ĥ = L Lᵀ, densifying a matrix-free precision
+        # Ĥ = L Lᵀ over the flattened state, densifying a matrix-free precision
         factor = gx.cholesky(self.precision)
-        noise = jax.random.normal(key, (n, *jnp.shape(self.mode)), self.mode.dtype)
+        upper = factor.T
+        size = jnp.size(self.mode)
+        noise = jax.random.normal(key, (n, size), self.mode.dtype)
 
-        def whitened_draw(standard: Float[Array, " N"]) -> Float[Array, " N"]:
+        def whitened_draw(standard: Float[Array, " size"]) -> Float[Array, "*state"]:
             # L⁻ᵀ z, by a triangular solve with Lᵀ
-            return lx.linear_solve(factor.T, standard, solver=lx.Triangular()).value
+            standard = standard.reshape(upper.in_structure().shape)
+            solved = lx.linear_solve(upper, standard, solver=lx.Triangular()).value
+            return solved.reshape(jnp.shape(self.mode))
 
         return self.mode + jax.vmap(whitened_draw)(noise)
 
@@ -162,7 +211,7 @@ def gauss_newton(
     *,
     dense: bool | None = None,
     jac: Literal["fwd", "bwd"] = "fwd",
-    solver: gx.AbstractSolverStrategy | None = None,
+    solver: gx.AbstractSolveStrategy | None = None,
 ) -> Laplace:
     """Build the Laplace posterior at a minimum from whitened residuals.
 
