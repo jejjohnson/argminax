@@ -71,6 +71,31 @@ def test_k_covering_every_update_is_the_full_unrolled_gradient() -> None:
     assert full == pytest.approx(-1.0, abs=1e-15)
 
 
+@pytest.mark.parametrize("max_steps", [2, 3, 4])
+def test_a_solve_shorter_than_k_differentiates_the_start(max_steps: int) -> None:
+    def from_start(start, adjoint):
+        solver = optx.GradientDescent(learning_rate=1.0, rtol=1e-14, atol=1e-14)
+        solution = optx.minimise(
+            _quadratic,
+            solver,
+            start,
+            jnp.array(0.5),
+            adjoint=adjoint,
+            max_steps=max_steps,
+            throw=False,
+        )
+        return solution.value[0]
+
+    start = jnp.ones(1)
+    full = jax.grad(from_start)(start, optx.RecursiveCheckpointAdjoint())
+    truncated = jax.grad(from_start)(start, KStep(k=5))
+    # ξ_T = (1 − θ)ᵀ x₀ with T = max_steps − 1 updates
+    assert full[0] == pytest.approx(0.5 ** (max_steps - 1), abs=1e-15)
+    assert truncated[0] == pytest.approx(float(full[0]), abs=1e-15)
+    _, tangent = jax.jvp(lambda x: from_start(x, KStep(k=5)), (start,), (start,))
+    assert tangent == pytest.approx(float(full[0]), abs=1e-15)
+
+
 def test_forward_mode_gives_the_same_gradient() -> None:
     def solve(theta):
         return _descend(theta, KStep(k=1), 3)

@@ -233,9 +233,18 @@ class KStep(optx.AbstractAdjoint):
         def replay_loop(
             cond_fun: Callable, body_fun: Callable, init_carry: Any, *, max_steps: Any
         ) -> Any:
-            del cond_fun, init_carry, max_steps
-            # the carry entering step T − window sits in slot T mod window
-            carry = jtu.tree_map(lambda stored: stored[steps % window], buffer)
+            del cond_fun, max_steps
+            # a solve shorter than the window replays from its live start, so
+            # y0 keeps its gradient; otherwise the carry entering step
+            # T − window sits in slot T mod window
+            from_start = steps < window
+            carry = jtu.tree_map(
+                lambda live, stored: jnp.where(
+                    from_start, live, stored[steps % window]
+                ),
+                init_carry,
+                buffer,
+            )
             replayed = jnp.minimum(steps, window)
             for index in range(window):
                 carry = jax.lax.cond(
