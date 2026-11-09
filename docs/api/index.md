@@ -15,7 +15,7 @@ The [capability index](capabilities.md) lists every public name on one page, wit
 | Module | Contents |
 |---|---|
 | [Adjoints](adjoint.md) | `KStep`, `OneStep`, `to_optimistix_adjoint` |
-| [Curvature](curvature.md) | `Laplace`, `gauss_newton`, `push_forward` |
+| [Curvature](curvature.md) | `Laplace`, `gauss_newton`, `push_forward`, `marginal_variance`, `VarianceEstimate`, `low_rank`, `sample_by_perturbation` |
 | [Type aliases](typing.md) | `Objective`, `Residuals` |
 | [Exceptions](exceptions.md) | `ArgminaxError`, `ValidationError`, `MissingExtraError` |
 
