@@ -47,7 +47,7 @@ Each foundation brings a rule. Breaking one runs fine on your example and fails 
 | **optimistix** | `minimise`, `least_squares`, `root_find`, the solver and adjoint protocols, `RESULTS` | argminax's solvers subclass optimistix's abstract solvers and its adjoints subclass `optx.AbstractAdjoint`; a non-converged solve is reported through `RESULTS`, never an exception. Check `solution.result` before trusting a gradient through the solve. |
 | **gaussx** | structured operators, solves, log-determinants and one step's algebra | Curvature is returned as a gaussx operator and never formed densely in library code. |
 | **jaxtyping** | array annotations | Named dims from the shared vocabulary ("House style"). |
-| **SciPy, hypothesis** (test group) | references for the nonlinear solvers; drawn problem sizes and seeds | Test oracles, not runtime dependencies: a bare install of argminax imports without them. |
+| **SciPy, hypothesis** (test group) | references for the nonlinear solvers; drawn problem sizes and seeds | Test oracles, not runtime dependencies: library code never imports them, and a bare install imports argminax without the test group (SciPy is installed anyway, as a dependency of JAX). |
 | **pytest + `--doctest-modules`** | the suite and every docstring `Examples:` block | An example's expected output is what the code prints; a stale example is a failing test. |
 
 ## Reuse before you write
@@ -116,6 +116,8 @@ Most rules here are tests, so CI tells you when one breaks. Read a test's docstr
 | `--doctest-modules` on `src/argminax` (`addopts`) | Every docstring `Examples:` block runs and prints what it says |
 | `tests/test_exceptions.py` | The hierarchy: every error is an `ArgminaxError` and its stdlib base |
 | `tests/conftest.py` | Every test runs with `jax_enable_x64` on |
+| `tests/test_harness.py` | The reference harness in `tests/_harness.py`: the linear-Gaussian closed forms agree with each other (Ŝ with the inverse Hessian of J, the evidence with the Laplace identity) to 1e-12, and each helper passes on its exact case and fails on a perturbed one |
+| The `bare-install` job in `ci.yml` | A plain `pip install .` imports argminax without the test group |
 | `tests/test_build_docs.py` | The two-tool docs pipeline: inventory parsing, anchor repair, link checking, the inventory port and the absolute nav URL in `docs/myst.yml`, the files copied to the site root (`ROOT_FILES`) |
 | `[tool.coverage.report] fail_under = 90` | Coverage of `src/argminax` in every coverage-enabled run (CI, `uv run poe test-cov`) |
 | `strict_markers = true` | Only the registered tier markers (`slow`, `integration`) exist |
