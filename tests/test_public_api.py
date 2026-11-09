@@ -19,6 +19,7 @@ import argminax
 SUBMODULES = [
     "_typing",
     "adjoint",
+    "curvature",
     "exceptions",
 ]
 
