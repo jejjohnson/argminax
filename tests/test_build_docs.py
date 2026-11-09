@@ -70,7 +70,7 @@ class TestParseInventory:
         if not real.is_file():
             pytest.skip("run `uv run poe docs-api` first")
         entries = build_docs.parse_inventory(real.read_bytes())
-        assert "argminax.summarize" in entries
+        assert "argminax.ArgminaxError" in entries
         assert all("$" not in uri for uri in entries.values())
 
 
