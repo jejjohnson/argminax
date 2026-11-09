@@ -36,3 +36,31 @@ jobs:
         with:
           files: ./coverage.xml
           fail_ci_if_error: false
+
+  # A plain `pip install .` (no test group) must import argminax: the test
+  # references are never runtime dependencies (#14). SciPy is not checked,
+  # because JAX itself depends on it.
+  bare-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+      - name: Install the distribution only
+        run: |
+          uv venv .venv-bare
+          uv pip install --python .venv-bare .
+      - name: The test references are absent and argminax imports
+        run: |
+          .venv-bare/bin/python - <<'PY'
+          import importlib.util
+
+          test_only = ("hypothesis",)
+          present = [name for name in test_only if importlib.util.find_spec(name)]
+          assert not present, f"the bare install pulled in {present}"
+
+          import argminax
+
+          print("argminax", argminax.__version__, "imports without the test group")
+          PY

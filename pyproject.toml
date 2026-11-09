@@ -134,6 +134,8 @@ python-version = "3.12"
 # ``Examples:`` blocks in every Google-style docstring. They are executable
 # documentation: if an example in the docs goes stale, CI fails.
 testpaths = ["tests", "src/argminax"]
+# Tests import the reference harness as `from _harness import ...`.
+pythonpath = ["tests"]
 # Test tiers (see "Test tiers" in AGENTS.md). CI runs every tier.
 strict_markers = true
 markers = [
