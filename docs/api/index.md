@@ -16,10 +16,11 @@ The [capability index](capabilities.md) lists every public name on one page, wit
 |---|---|
 | [Adjoints](adjoint.md) | `KStep`, `OneStep`, `to_optimistix_adjoint` |
 | [Curvature](curvature.md) | `Laplace`, `gauss_newton`, `push_forward`, `marginal_variance`, `VarianceEstimate`, `low_rank`, `sample_by_perturbation` |
+| [Diagnostics](diagnose.md) | `averaging_kernel`, `degrees_of_freedom`, `information_content`, `TraceEstimate` |
 | [Type aliases](typing.md) | `Objective`, `Residuals` |
 | [Exceptions](exceptions.md) | `ArgminaxError`, `ValidationError`, `MissingExtraError` |
 
-`argminax.diagnose` arrives in Wave 2 and `argminax.solve` in Wave 3, each with its own page.
+`argminax.solve` arrives in Wave 3, with its own page.
 
 ## Package overview
 
