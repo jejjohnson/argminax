@@ -14,7 +14,7 @@ Usage::
 ``tests/test_capabilities.py`` runs the check, so a public API change that
 skips ``uv run poe capabilities`` fails the test suite.
 
-The script needs no editing when the template is adopted: the import package
+The script needs no editing when a module is added: the import package
 is read from ``pyproject.toml`` and the public submodules are discovered. Two
 settings are yours to fill in:
 
@@ -64,9 +64,28 @@ PACKAGE = _package_name()
 
 # Libraries the package builds on, as {distribution: [public modules]}, with a
 # one-paragraph blurb each, e.g. {"numpy": ["numpy"]}.
-# template-example: empty because the example package is dependency-free.
-UPSTREAM: dict[str, list[str]] = {}
-UPSTREAM_BLURB: dict[str, str] = {}
+# Only their top-level namespaces are indexed; jax.numpy and jax.lax are too
+# large to list.
+UPSTREAM: dict[str, list[str]] = {
+    "jax": ["jax"],
+    "equinox": ["equinox"],
+    "lineax": ["lineax"],
+    "optimistix": ["optimistix"],
+    "gaussx": ["gaussx"],
+}
+UPSTREAM_BLURB: dict[str, str] = {
+    "jax": "transformations (jit, vmap, grad, jvp, linearize) and the array type",
+    "equinox": "modules as pytrees, filtered transformations and static fields",
+    "lineax": "linear operators, their PSD tags and the linear solvers",
+    "optimistix": (
+        "minimise, least_squares and root_find, the solver and adjoint "
+        "protocols argminax extends, and RESULTS"
+    ),
+    "gaussx": (
+        "structured operators, solves, log-determinants and one Newton or "
+        "Gauss–Newton step's algebra"
+    ),
+}
 
 # Names two homes may bind to different objects, and why, e.g.
 # {"Mean": "stats.Mean is the statistic, aggregation.Mean the reducer"}.
@@ -76,6 +95,7 @@ _AUTOREF = re.compile(r"\[([^\]]+)\]\[[^\]]*\]")
 # A full stop that ends a sentence (not "e.g." / "i.e." / "etc.").
 _SENTENCE_END = re.compile(r"(?<!e\.g)(?<!i\.e)(?<!etc)\.\s+(?=[A-Z])")
 UPSTREAM_MARKER = "<!-- upstream -->"
+_ADDRESS = re.compile(r" at 0x[0-9a-fA-F]+")
 
 
 def _first_line(text: str) -> str:
@@ -119,6 +139,8 @@ def _summary(obj: object, *, home: str) -> str:
         return f"Alias of `{obj.__value__!r}`.".replace("|", "\\|")
     if not callable(obj):
         value = repr(obj)
+        # A default repr carries the object's address, which changes every run.
+        value = _ADDRESS.sub("", value)
         return f"`{value if len(value) <= 60 else value[:57] + '...'}`".replace(
             "|", "\\|"
         )

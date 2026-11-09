@@ -1,8 +1,6 @@
 # Code Review Agent Instructions
 
-Standing instructions for **all** agents performing code reviews on this repository. Read "Reuse before you write", "The contracts" and "What enforces them" in [`AGENTS.md`](AGENTS.md) first; this file is the checklist and the report format. Most defects worth finding are a contract broken in a way the tests cannot see (an input mutated on one path, a validator skipped, an unfitted transform that quietly does nothing, a docstring that promises what the code does not do) or a re-implementation of something the package already has, not style.
-
-<!-- template-example: this file's sections 2 and "Package-Specific Checks" describe the example package. -->
+Standing instructions for **all** agents performing code reviews on this repository. Read "Reuse before you write", "The contracts" and "What enforces them" in [`AGENTS.md`](AGENTS.md) first; this file is the checklist and the report format. Most defects worth finding are a contract broken in a way the tests cannot see (an operator tagged PSD that is not, a gradient trusted through a solve that never converged, Python control flow that breaks under `jit`, a docstring that promises what the code does not do) or a re-implementation of something the package, gaussx or optimistix already has, not style.
 
 ---
 
@@ -38,42 +36,42 @@ Skip anything ruff, ty or the tests already enforce (formatting, import order, `
 
 ### 1. Reuse and boundaries
 
-- Every function, class or module the diff **adds** has been checked against [`docs/api/capabilities.md`](docs/api/capabilities.md) and the private helpers in "Reuse before you write" in `AGENTS.md`. A re-implemented validator, statistic, filter, padding rule, buffer or transform is a **High** finding, with the existing name to use.
+- Every function, class or module the diff **adds** has been checked against [`docs/api/capabilities.md`](docs/api/capabilities.md) and the private helpers in "Reuse before you write" in `AGENTS.md`. A re-implemented solve loop, linear solve, curvature product, log-determinant, adjoint or test reference is a **High** finding, with the existing name to use (in argminax, gaussx, optimistix or lineax).
 - No new runtime dependency without discussion; an optional one sits behind an extra and an in-function import that names the extra. `uv.lock` is updated with any dependency change.
-- Imports keep pointing one way (the module table in `AGENTS.md`); the library never imports the CLI.
+- Imports keep pointing one way (the module table in `AGENTS.md`), and the layer rule holds: argminax never imports pipekit, pipekit-cycle, integrix, vardax, pyrox or a GeoModels library. Logic lives in `argminax._src`; a public module only re-exports.
+- The optimistix pin (`<0.2`) moves only with a re-run of the adjoint tests.
 - A rename or removal of a public name keeps the old name working with a `DeprecationWarning` for at least one release.
 
 ### 2. The contracts
 
-<!-- template-example: the example package's contracts; replace with your package's. -->
-
-- **Public functions** validate once, at the boundary, with `as_floats` / `require_non_empty` / `require_positive`; raise `ValidationError` / `EmptySeriesError` whose message names the argument; return a **new** list and never mutate the input; use `math.fsum` for sums; turn degenerate input into an error, not a `nan`.
-- **Transforms** satisfy `Transform` structurally (no base class); stateless ones are frozen dataclasses whose `fit` returns `self`; fitted ones keep learned state in `init=False` trailing-underscore fields, return `self` from `fit`, and raise `NotFittedError` from `apply` before `fit`; every transform has `fit_apply`; constructor arguments are validated in `__post_init__`; the transform joins `TestProtocols` in `tests/test_transforms.py`.
-- **CLI** subcommands are a subparser plus a `_run_<name>` handler in `main`'s `handlers`; they write only to the injected `out`, read through `_read_values`, validate options with an `argparse` `type=`, and never `print` or `sys.exit`.
-- **Exceptions** derive from `MypackageError` and the closest stdlib exception; errors are chained (`raise … from err`).
+- **Public functions** validate static inputs once, at the boundary, and raise `ValidationError` whose message names the argument; never mutate an input; preserve the input dtype; run under `jit`, `vmap` and `grad`; never call `jax.jit` themselves.
+- **JAX rules**: no Python `if`, `while` or `break` on a traced value; no `float()`, `int()` or `.item()` on one; no host RNG (randomness comes from a keyword-only `key`); no `jnp.linalg.inv`, and no dense solve or materialised Jacobian in library code.
+- **Solvers and adjoints** subclass optimistix's abstract solvers and `optx.AbstractAdjoint`; non-convergence is reported through `RESULTS`, never raised; a gradient through a solve is trusted only after `solution.result` is checked.
+- **Curvature** is a gaussx (lineax) operator carrying the right structure tag, built matrix-free; it matches its linear-Gaussian closed form to 1e-12 in float64 through `tests/_harness.py`.
+- **Exceptions** derive from `ArgminaxError` and the closest stdlib exception; errors are chained (`raise … from err`).
 
 ### 3. Public API and documentation
 
-- New names: in the module's `__all__` and the top-level `__all__`; a new module in `SUBMODULES` (`tests/test_public_api.py`), with its `docs/api/<module>.md` page, a `nav` entry in `mkdocs.yml` and a row in `docs/api/index.md`; `docs/api/capabilities.md` regenerated (`uv run poe capabilities`).
-- Docstrings in the `python-style` layout: summary, the defining equation in Unicode (`eman-style-math`; `$…$` in a docstring is a finding), `Algorithm:` for a method, `Args:` with meaning and symbol, `Returns:` and `Raises:` matching the code, and two or three executable `Examples:` (typical, edge, composition) whose output is what the code prints (rounded values, not 17-digit floats).
+- New names: in the `_src` module, re-exported from the public module's `__all__` (exceptions also from the top-level `__all__`); a new public module in `SUBMODULES` (`tests/test_public_api.py`), with its `docs/api/<module>.md` page, a `nav` entry in `mkdocs.yml` and a row in `docs/api/index.md`; `docs/api/capabilities.md` regenerated (`uv run poe capabilities`).
+- Docstrings in the `python-style` layout: summary, the defining equation in Unicode (`eman-style-math`; `$…$` in a docstring is a finding), `Algorithm:` for a method, `Args:` with meaning and symbol, `Returns:` and `Raises:` matching the code, and two or three executable `Examples:` (typical, edge, composition) whose output is what the code prints (shapes, `allclose` booleans or reprs, not raw floats).
 - Maths in MyST and MkDocs pages uses the `eman-style-math` macros, defines every symbol with its shape, keeps each expression on one line and has no spacing macros (`\,`, `\quad`, …).
-- Prose pages: MyST directives, not MkDocs-Material syntax; API links by the top-level name (`xref:api#mypackage.<Name>`); a new page or notebook in the `docs/myst.yml` toc with a basename unique across `docs/`.
+- Prose pages: MyST directives, not MkDocs-Material syntax; API links by the public name (`xref:api#argminax.<Name>`); a new page or notebook in the `docs/myst.yml` toc with a basename unique across `docs/`.
 - Notebooks committed executed, with no error outputs, and every number quoted in the prose matching the printed output.
 
 ### 4. Tests
 
-- Each behaviour is checked against a closed form, a hand computation or a published value; edge cases (empty input, a single value, a constant series, invalid arguments, overflow) have their own tests.
+- Each behaviour is checked against the linear-Gaussian closed form, a SciPy reference or finite differences through `tests/_harness.py`, plus a `jit` / `vmap` / `grad` smoke test; edge cases (a single state, more states than observations, an ill-conditioned prior, invalid arguments) have their own tests.
 - New code is covered (the 90 % gate is global, so a well-covered package can hide an untested module: look at the diff, not the total).
-- Randomness, if any, is seeded; a statistical assertion is bounded by the statistic's own sampling distribution, with the bound's source in a comment.
+- Randomness comes from a fixed key; a statistical assertion is bounded by the statistic's own sampling distribution (`assert_within_stderr`, `assert_sample_covariance`), with the bound's source in a comment.
 - Tier markers right: unmarked under ~1 s, `slow` above, `integration` for end-to-end workflows and optional dependencies.
 
 ### 5. Modern Python and dependencies
 
 - `from __future__ import annotations`; type hints on every public function; `X | None`, built-in generics, PEP 695 `type` aliases.
-- `dataclasses` with `slots=True` for data containers (`frozen=True` when immutable); `Enum` / `StrEnum` for fixed sets of options; `pathlib`; f-strings; context managers for resources.
+- `eqx.Module` for solvers, operators and results, with configuration as `eqx.field(static=True)`; `Enum` / `StrEnum` for fixed sets of options; `pathlib`; f-strings; context managers for resources.
 - Specific exceptions, chained with `raise … from …`; guard clauses over deep nesting.
-- `python-style` comments and naming: comments above the line, never beside it; a Unicode equation above each mathematical line; descriptive names, with the symbol only in the comment; one operation per line. In a JAX package, its JAX rules too (jaxtyping dims, einx, lineax, `eqx.error_if`, the four tests per public forward).
-- New CLIs and scripts use `cyclopts` and `loguru`, not argparse, click, typer, `print` progress or stdlib `logging` (the example CLI's `argparse` is a documented exception).
+- `python-style` comments and naming: comments above the line, never beside it; a Unicode equation above each mathematical line; descriptive names, with the symbol only in the comment; one operation per line. Its JAX rules too (jaxtyping dims, einx, lineax, `eqx.error_if`, `key` keyword-only and last, the four tests per public forward).
+- New scripts use `cyclopts` and `loguru`, not argparse, click, typer, `print` progress or stdlib `logging`; argminax has no CLI.
 - A dependency, when one is justified, follows the preferences in `.github/instructions/python-coding.instructions.md`.
 
 ### 6. Security
@@ -85,124 +83,190 @@ Skip anything ruff, ty or the tests already enforce (formatting, import order, `
 
 ## Package-Specific Checks
 
-<!-- template-example: these patterns are the example package's; replace them with the defects your package is prone to. Every example here runs. -->
+Every example here runs, with `jax_enable_x64` on.
 
-### Validate once, at the boundary
+### No Python control flow on a traced value
 
 ```python
-# ❌ No validation: window=0 or an empty series fails deep inside max() with
-#    "max() iterable argument is empty", and a string slips through as text
-def rolling_max(series, window):
-    return [max(series[i : i + window]) for i in range(len(series) - window + 1)]
+import jax
+import jax.numpy as jnp
+from jax import lax
 
 
-# ✅ The package's validators, and the package's error messages
-from mypackage import Series, require_non_empty, require_positive
+def gradient(x):
+    return 2.0 * x
 
 
-def rolling_max(series: Series, window: int) -> list[float]:
-    values = require_non_empty(series)
-    window = require_positive(window, name="window")
-    return [max(values[i : i + window]) for i in range(len(values) - window + 1)]
+# ❌ `break` on a traced norm: fine eagerly, a TracerBoolConversionError under jit
+def descend_eagerly(x, tolerance=1e-8, max_steps=100):
+    for _ in range(max_steps):
+        if jnp.linalg.norm(gradient(x)) < tolerance:
+            break
+        x = x - 0.25 * gradient(x)
+    return x
+
+
+# ✅ The stopping rule is the loop's condition, so jit, vmap and grad trace it
+def descend(x, tolerance=1e-8, max_steps=100):
+    def keep_going(carry):
+        step, state = carry
+        return (step < max_steps) & (jnp.linalg.norm(gradient(state)) >= tolerance)
+
+    def take_step(carry):
+        step, state = carry
+        return step + 1, state - 0.25 * gradient(state)
+
+    _, x = lax.while_loop(keep_going, take_step, (0, x))
+    return x
+
+
+assert jnp.allclose(jax.jit(descend)(jnp.ones(3)), 0.0, atol=1e-8)
 ```
 
-### Never mutate the input
+### No `float()` on a traced value, and no host RNG
 
 ```python
-# ❌ Sorts the caller's list in place
-def upper_quartile(series: list[float]) -> float:
-    series.sort()
-    return series[(3 * len(series)) // 4]
+import jax
+import jax.numpy as jnp
+import numpy as np
 
 
-# ✅ Work on a fresh, validated copy, or reuse the existing statistic
-from mypackage import Series, quantile
+# ❌ float() fails under jit, and the NumPy probes are drawn once, at trace
+#    time, so every call of the jitted function reuses the same probes
+def hutchinson_trace_on_host(matvec, size, n_probes=64):
+    probes = np.random.choice([-1.0, 1.0], size=(n_probes, size))
+    return float(jnp.mean(jnp.sum(probes * jax.vmap(matvec)(probes), axis=1)))
 
 
-def upper_quartile(series: Series) -> float:
-    return quantile(series, 0.75)
+# ✅ The probes come from a key, and the estimate stays an array
+def hutchinson_trace(matvec, size, n_probes=64, *, key):
+    probes = jax.random.rademacher(key, (n_probes, size), dtype=jnp.float64)
+    return jnp.mean(jnp.sum(probes * jax.vmap(matvec)(probes), axis=1))
+
+
+diagonal = jnp.arange(1.0, 5.0)
+estimate = hutchinson_trace(lambda v: diagonal * v, 4, key=jax.random.key(0))
+# A Rademacher probe gives the exact trace of a diagonal operator
+assert jnp.allclose(estimate, diagonal.sum())
 ```
 
-### A fitted transform fails loudly before `fit`
+### A PSD tag is a promise
 
 ```python
-from dataclasses import dataclass, field
-from typing import Self
-
-from mypackage import NotFittedError, Series, as_floats, require_non_empty
-
-
-# ❌ Unfitted, `apply` silently behaves as the identity
-@dataclass(slots=True)
-class CenterSilently:
-    mean_: float | None = field(default=None, init=False)
-
-    def apply(self, series: Series) -> list[float]:
-        return [value - (self.mean_ or 0.0) for value in as_floats(series)]
+import gaussx
+import jax
+import jax.numpy as jnp
+import lineax as lx
 
 
-# ✅ The package's fit / apply lifecycle
-@dataclass(slots=True)
-class Center:
-    mean_: float | None = field(default=None, init=False)
+def residuals(x):
+    return jnp.sin(x) - 0.5
 
-    def fit(self, series: Series) -> Self:
-        values = require_non_empty(series)
-        self.mean_ = sum(values) / len(values)
-        return self
 
-    def apply(self, series: Series) -> list[float]:
-        if self.mean_ is None:
-            msg = "Center is not fitted; call .fit(series) first"
-            raise NotFittedError(msg)
-        return [value - self.mean_ for value in as_floats(series)]
+def cost(x):
+    return 0.5 * jnp.sum(residuals(x) ** 2)
 
-    def fit_apply(self, series: Series) -> list[float]:
-        return self.fit(series).apply(series)
+
+x = jnp.array([2.0, 2.5, 3.0])
+
+# ❌ Away from the minimum the full Hessian of J is indefinite, so the tag
+#    lies and CG on this operator can diverge or return garbage
+hessian = jax.hessian(cost)(x)
+wrong = lx.MatrixLinearOperator(hessian, lx.positive_semidefinite_tag)
+
+# ✅ The Gauss–Newton curvature JᵀJ is PSD by construction, and gaussx builds
+#    it matrix-free with the tag already on
+curvature = gaussx.gauss_newton_operator(residuals, x)
+assert lx.is_positive_semidefinite(curvature)
+assert jnp.all(jnp.linalg.eigvalsh(curvature.as_matrix()) >= 0.0)
+assert jnp.any(jnp.linalg.eigvalsh(hessian) < 0.0)
 ```
 
-### Typed, chained errors that name the argument
+### Check convergence before trusting a gradient through a solve
 
 ```python
-from mypackage import ValidationError
+import jax
+import jax.numpy as jnp
+import optimistix as optx
 
 
-# ❌ A bare except catches everything (KeyboardInterrupt included), and the
-#    error is a RuntimeError naming neither the argument nor the bad value
-def parse_alpha(text: str) -> float:
-    try:
-        return float(text)
-    except:  # noqa: E722
+def cost(x, target):
+    return jnp.sum((x - target) ** 2) + 0.1 * jnp.sum(x**4)
+
+
+solver = optx.BFGS(rtol=1e-10, atol=1e-10)
+
+
+# ❌ throw=False and no look at the result: if the solve stopped at
+#    max_steps, the implicit gradient is the gradient of a point that is not
+#    a minimum, and nothing says so
+def retrieve_blindly(target):
+    solution = optx.minimise(cost, solver, jnp.zeros(2), target, throw=False)
+    return solution.value
+
+
+# ✅ Return the result with the value, and assert on it in the test
+def retrieve(target):
+    solution = optx.minimise(cost, solver, jnp.zeros(2), target, throw=False)
+    return solution.value, solution.result
+
+
+target = jnp.array([1.0, -1.0])
+_, result = retrieve(target)
+assert result == optx.RESULTS.successful
+sensitivity = jax.jacfwd(lambda t: retrieve(t)[0])(target)
+assert sensitivity.shape == (2, 2)
+```
+
+### Precision is the caller's
+
+```python
+import jax.numpy as jnp
+import numpy as np
+
+
+# ❌ A float64 NumPy constant promotes a float32 state to float64 under x64
+def damp_and_promote(step):
+    return step * np.float64(0.5)
+
+
+# ✅ A Python scalar takes the dtype of the array it meets
+def damp(step):
+    return step * 0.5
+
+
+step = jnp.ones(3, dtype=jnp.float32)
+assert damp_and_promote(step).dtype == jnp.float64
+assert damp(step).dtype == jnp.float32
+```
+
+### Typed errors that name the argument, on static information only
+
+```python
+from argminax import ValidationError
+
+
+# ❌ A RuntimeError that names neither the argument nor the value
+def check_max_steps_vaguely(max_steps: int) -> int:
+    if max_steps <= 0:
         raise RuntimeError("bad input")
+    return max_steps
 
 
-# ✅ The package's error (also a ValueError), the argument's name, the cause
-def parse_alpha(text: str) -> float:
-    try:
-        alpha = float(text)
-    except ValueError as err:
-        msg = f"'alpha' must be a number, got {text!r}"
-        raise ValidationError(msg) from err
-    if not 0.0 < alpha <= 1.0:
-        msg = f"'alpha' must lie in (0, 1], got {alpha!r}"
+# ✅ The package's error (also a ValueError), the argument's name, the value.
+#    A traced value is never checked this way: use eqx.error_if, or report
+#    it through optimistix's RESULTS.
+def check_max_steps(max_steps: int) -> int:
+    if isinstance(max_steps, bool) or not isinstance(max_steps, int):
+        msg = f"'max_steps' must be an integer, got {max_steps!r}"
         raise ValidationError(msg)
-    return alpha
-```
+    if max_steps <= 0:
+        msg = f"'max_steps' must be a positive integer, got {max_steps}"
+        raise ValidationError(msg)
+    return max_steps
 
-### Doctest output the code really prints
 
-```python
-# ❌ Expected output copied from a calculator: the doctest fails on the
-#    17th digit, or passes only on one platform
-#     >>> zscores([1.0, 2.0, 4.0])
-#     [-0.87, -0.22, 1.09]
-
-# ✅ Round in the example, and paste what it prints
-#     >>> [round(z, 4) for z in zscores([1.0, 2.0, 4.0])]
-#     [-0.8729, -0.2182, 1.0911]
-from mypackage import zscores
-
-assert [round(z, 4) for z in zscores([1.0, 2.0, 4.0])] == [-0.8729, -0.2182, 1.0911]
+assert check_max_steps(10) == 10
 ```
 
 ---

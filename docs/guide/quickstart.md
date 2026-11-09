@@ -1,125 +1,40 @@
 # Quickstart
 
-Everything in this page is a real, runnable snippet. If you prefer an
-executable version with plots, jump to the
-[guided tour notebook](../notebooks/tour.ipynb).
-
 ## Install
 
+argminax is not on PyPI yet; install it from GitHub:
+
 ```bash
-uv add mypackage      # or: pip install mypackage
+pip install "argminax @ git+https://github.com/jejjohnson/argminax.git"
 ```
 
-There are no runtime dependencies, so this pulls in nothing else.
-
-## Describe a series
-
-[`summarize`](xref:api#mypackage.summarize) returns a frozen
-[`Summary`](xref:api#mypackage.Summary) — immutable, hashable, comparable.
+That brings in JAX, Equinox, lineax, optimistix and gaussx. The `matfree` extra adds stochastic Lanczos quadrature for log-determinants of large operators; the functions that need it import it when they are called, and raise [`MissingExtraError`](xref:api#argminax.MissingExtraError) naming the extra when it is missing.
 
 ```python
-import mypackage as mp
+import argminax
 
-series = [2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0]
-summary = mp.summarize(series)
-
-summary.count      # 8
-summary.mean       # 5.0
-summary.median     # 4.5
-summary.std        # 2.1380899352993947
-summary.spread     # 7.0
+argminax.__version__  # '0.0.1'
 ```
 
-The variance uses the unbiased estimator by default. Pass `ddof=0` for the
-population variance:
+## Double precision
+
+Curvature and diagnostics invert or factor a Hessian, which loses digits fast in single precision. Turn on 64-bit floats at the start of your program, before any array is created:
 
 ```python
-mp.summarize(series, ddof=0).variance   # 4.0
+import jax
+
+jax.config.update("jax_enable_x64", True)
 ```
 
-:::{note} Why `fsum`?
-Summation uses `math.fsum`, and the variance is computed from deviations
-rather than from $\sum x^2 - (\sum x)^2 / N$. The naive formula loses
-every significant digit when the mean is large — a series centred on
-$10^9$ returns a *negative* variance. See
-[Statistics](statistics.md#numerical-stability).
-:::
+argminax's own tests run this way and compare against closed forms to $10^{-12}$.
 
-## Stream it instead
+## The calling convention
 
-When the data doesn't fit in memory, [`RunningStats`](xref:api#mypackage.RunningStats)
-consumes it one value at a time in constant space:
+argminax follows optimistix: a cost is a function `fn(y, args)` of the state and a pytree of fixed arguments, so a function written for `optx.minimise` or `optx.least_squares` already works with argminax. The two shapes are named in `argminax._typing`:
 
-```python
-stats = mp.RunningStats()
-for value in series:
-    stats.update(value)
+| Alias | Signature | Used by |
+|---|---|---|
+| `Objective` | `fn(x, args) -> scalar`, the cost $J$ | `optx.minimise` |
+| `Residuals` | `fn(x, args) -> pytree`, with $J = \frac{1}{2} \lVert r \rVert^2$ | `optx.least_squares` |
 
-stats.mean == mp.summarize(series).mean   # True
-```
-
-## Smooth it
-
-```python
-mp.moving_average(series, window=3)              # linear, symmetric
-mp.exponential_moving_average(series, alpha=0.3) # linear, causal
-mp.median_filter(series, window=3)               # non-linear, spike-proof
-```
-
-The filters differ in how they treat an isolated outlier:
-
-```python
-spike = [1.0, 1.0, 99.0, 1.0, 1.0]
-
-mp.moving_average(spike, 3)   # [1.0, 33.67, 33.67, 33.67, 1.0] — smeared
-mp.median_filter(spike, 3)    # [1.0,   1.0,   1.0,   1.0, 1.0] — removed
-```
-
-## Compose transforms
-
-[`Pipeline`](xref:api#mypackage.Pipeline) fits each step on the output of the previous
-one, then applies them in order:
-
-```python
-pipeline = mp.chain(
-    mp.Clip(upper=50.0),      # drop implausible spikes first
-    mp.Standardize(),         # then centre and scale
-    mp.MovingAverage(3),      # finally smooth
-)
-
-clean = pipeline.fit_apply(series)
-```
-
-Pipelines compose with `|`, and the result is a new pipeline — neither operand
-is mutated:
-
-```python
-extended = pipeline | mp.Clip(-3.0, 3.0)
-len(pipeline), len(extended)   # (3, 4)
-```
-
-## Handle failures
-
-Every error derives from [`MypackageError`](xref:api#mypackage.MypackageError):
-
-```python
-try:
-    mp.summarize([])
-except mp.EmptySeriesError as err:
-    print(err)      # 'series' must contain at least one value, got 0
-```
-
-…and from the closest standard-library exception, so existing `except` clauses
-keep working:
-
-```python
-isinstance(mp.EmptySeriesError(), ValueError)   # True
-isinstance(mp.NotFittedError(), RuntimeError)   # True
-```
-
-## Next steps
-
-- [Statistics](statistics.md) — the estimators and their numerics
-- [Smoothing](smoothing.md) — filter maths and boundary handling
-- [Transforms](transforms.md) — writing your own transform
-- [CLI](cli.md) — the `mypackage` console script
+For the retrieval cost, the residuals are whitened by the two covariances, $r(x) = (S_\varepsilon^{-1/2} (y - F(x)), S_a^{-1/2} (x - x_a))$, which is what the Gauss–Newton solvers and the curvature at the minimum read.

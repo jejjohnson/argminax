@@ -1,6 +1,6 @@
 ---
 name: reuse-reviewer
-description: Read-only reviewer that checks a diff for re-implemented functionality — new helpers, validators, statistics, filters, padding rules, buffers, transforms, pipeline logic, exceptions or CLI parsing that duplicate a public name in docs/api/capabilities.md or a shared private helper listed in AGENTS.md. Use proactively on any change that adds functions, classes or modules, before committing or during code review.
+description: Read-only reviewer that checks a diff for re-implemented functionality — solve loops, linear solves, curvature products, log-determinants, Newton steps, adjoints, diagnostics, test references or exceptions that duplicate a public name in docs/api/capabilities.md (argminax or its upstream JAX, Equinox, lineax, optimistix and gaussx) or a shared private helper listed in AGENTS.md. Use proactively on any change that adds functions, classes or modules, before committing or during code review.
 tools: Read, Grep, Glob, Bash
 ---
 
@@ -16,19 +16,20 @@ The diff (`git diff <base>...HEAD`, default base `main`) or the files / commit r
 2. For each, search for an existing equivalent:
    - `docs/api/capabilities.md` — every public name, grouped by the module that defines it (and the `UPSTREAM` libraries, if `scripts/capabilities.py` lists any);
    - the private helpers in the "Reuse before you write" table of `AGENTS.md`;
-   - a grep of `src/` for the key operation (`fsum`, `sorted(`, `deque(`, `float(`, the error-message text).
+   - a grep of `src/` for the key operation (`linear_solve`, `linearize`, `linear_transpose`, `while_loop`, the error-message text).
 3. Also flag, wherever they appear in the diff:
-   <!-- template-example: these are the example package's usual re-implementations; replace them with your package's. -->
-   - hand-written coercion or validation (`[float(v) for v in series]`, `if not series`, `if window <= 0`, an `isinstance(x, int)` check) → `as_floats`, `require_non_empty`, `require_positive`;
-   - a mean, variance, standard deviation, quantile, median or z-score → `summarize` / `Summary`, `quantile`, `zscores`, `RunningStats`;
-   - a rolling mean or median, an exponential smoother, end padding or reflection → `moving_average`, `median_filter`, `exponential_moving_average`, `Padding` and `smoothing._pad`;
-   - a `deque(maxlen=…)` buffer → `Window`;
-   - standardising, min–max scaling, clamping, or a loop applying steps in order → `Standardize`, `MinMaxScale`, `Clip`, `Pipeline` / `chain`;
-   - a base class or registry for transforms → the structural `Transform` protocol;
-   - a new exception class for invalid input or a missing `fit` → `ValidationError`, `EmptySeriesError`, `NotFittedError`;
-   - number parsing or stream handling in the CLI → `cli._read_values`, the `run`-style injected streams of `main`;
+   - a hand-written solve loop, line search, BFGS or Newton iteration → `optx.minimise` / `optx.least_squares` with an optimistix solver, or argminax's own solvers (`argminax.solve`, Wave 3);
+   - `jnp.linalg.solve`, `jnp.linalg.inv`, a hand-rolled CG → lineax (`lx.linear_solve` with `lx.CG`, `lx.Cholesky`, …) or the gaussx solve for the operator;
+   - a dense Gauss–Newton precision `K.T @ ... @ K + ...` → `gaussx.gauss_newton_operator` (matrix-free, PSD-tagged) or `gaussx.gauss_newton_precision`; a Laplace covariance or its diagonal → `argminax.curvature` (Wave 1);
+   - a log-determinant or a trace estimator → gaussx's log-determinants; `matfree` behind the `argminax[matfree]` extra;
+   - one Newton step's algebra → `gaussx.newton_update`;
+   - an implicit-function-theorem gradient at a converged minimum → `optx.ImplicitAdjoint`;
+   - an averaging kernel, degrees of freedom for signal or information content → `argminax.diagnose` (Wave 2);
+   - a `Callable[[PyTree, Any], ...]` annotation for a cost or residuals → `Objective`, `Residuals` (`argminax._typing`);
+   - a new exception class for invalid input or a missing extra → `ValidationError`, `MissingExtraError`;
+   - in tests, a hand-built linear-Gaussian problem, a finite-difference gradient, a SciPy comparison or a sampling bound → the helpers in `tests/_harness.py`;
    - a public name that duplicates another public name for a different object (`tests/test_capabilities.py` will fail on it).
 
 ## Report
 
-For each finding: `file:line` — what was added — the existing code to use instead (exact import path) — the suggested change. Order by confidence; say "no re-implementation found" when that is the case. Do not report style, formatting, correctness (the correctness reviewer's job) or anything a linter catches.
+For each finding: `file:line` — what was added — the existing code to use instead (exact import path) — the suggested change. Order by confidence; say "no re-implementation found" when that is the case. Do not report style, formatting, numerics (the numerics reviewer's job) or anything a linter catches.

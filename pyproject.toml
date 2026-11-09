@@ -1,13 +1,13 @@
 [project]
-name = "mypackage"
-version = "0.1.7"
-description = "My short description for my project."
+name = "argminax"
+version = "0.0.1"
+description = "Optimisation with uncertainty at the minimum for JAX: solvers, curvature, retrieval diagnostics and minimiser adjoints on optimistix and gaussx."
 authors = [
     {name="J. Emmanuel Johnson", email="jemanjohnson34@gmail.com"},
 ]
 license = { file = "LICENSE" }
 readme = "README.md"
-keywords = []
+keywords = ["jax", "optimisation", "optimistix", "laplace approximation", "retrieval", "data assimilation"]
 requires-python = ">=3.12"
 classifiers = [
     "Topic :: Scientific/Engineering",
@@ -19,13 +19,26 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Development Status :: 2 - Pre-Alpha",
 ]
-dependencies = []
+# optimistix is held to one minor version because the k-step adjoint reads
+# the private layout of its solve inputs; gaussx comes by git tag, as
+# elsewhere in the stack.
+dependencies = [
+    "equinox>=0.13.8",
+    "gaussx @ git+https://github.com/jejjohnson/gaussx@v0.6.12",
+    "jax>=0.10",
+    "jaxlib>=0.10",
+    "jaxtyping>=0.3",
+    "lineax>=0.1.1",
+    "optimistix>=0.1.0,<0.2",
+]
+
+[project.optional-dependencies]
+# Stochastic Lanczos quadrature for log-determinants, imported lazily by the
+# functions that need it.
+matfree = ["matfree>=0.6.2"]
 
 [project.urls]
-Repository = "https://github.com/jejjohnson/mypackage"
-
-[project.scripts]
-mypackage = "mypackage.cli:main"
+Repository = "https://github.com/jejjohnson/argminax"
 
 [dependency-groups]
 dev = [
@@ -35,6 +48,12 @@ dev = [
     "poethepoet>=0.49.0",
     "cyclopts>=5.3.3",
     "loguru>=0.7.3",
+]
+test = [
+    # SciPy is the reference for the nonlinear solvers; hypothesis draws the
+    # problem sizes and seeds of the property tests.
+    "scipy>=1.14",
+    "hypothesis>=6.100",
 ]
 lint = [
     "ruff>=0.15.22",
@@ -65,12 +84,21 @@ docs = [
     "pygments>=2.21.0,<2.22",
 ]
 
+[tool.uv]
+# `uv run` and `uv sync` install the test group too, so the suite always has
+# its references.
+default-groups = ["dev", "test"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.metadata]
+# gaussx is not on PyPI; it resolves from its GitHub release tag.
+allow-direct-references = true
+
 [tool.hatch.build.targets.wheel]
-packages = ["src/mypackage"]
+packages = ["src/argminax"]
 
 [tool.ruff]
 target-version = "py312"
@@ -78,10 +106,12 @@ line-length = 88
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
-ignore = ["E402", "E721", "E731", "E741"]
+# F722: jaxtyping dimension strings (`Float[Array, "N M"]`) read as forward annotations.
+ignore = ["E402", "E721", "E731", "E741", "F722"]
 # Docstrings and comments carry Unicode maths (eman-style-math, "Maths
-# notation" in AGENTS.md), so the maths glyphs that look like ASCII are allowed.
-allowed-confusables = ["−", "×", "∗", "∣", "α", "γ", "ι", "ν", "ο", "ρ", "σ", "υ"]
+# notation" in AGENTS.md), so the maths glyphs that look like ASCII are allowed,
+# and the en dash of "Gauss–Newton".
+allowed-confusables = ["−", "–", "×", "∗", "∣", "α", "γ", "ι", "ν", "ο", "ρ", "σ", "υ", "𝒩", "ℝ", "′"]
 
 [tool.ruff.lint.isort]
 combine-as-imports = true
@@ -100,10 +130,10 @@ docstring-code-line-length = 72
 python-version = "3.12"
 
 [tool.pytest.ini_options]
-# `src/mypackage` is a testpath so that --doctest-modules collects the
+# `src/argminax` is a testpath so that --doctest-modules collects the
 # ``Examples:`` blocks in every Google-style docstring. They are executable
 # documentation: if an example in the docs goes stale, CI fails.
-testpaths = ["tests", "src/mypackage"]
+testpaths = ["tests", "src/argminax"]
 # Test tiers (see "Test tiers" in AGENTS.md). CI runs every tier.
 strict_markers = true
 markers = [
@@ -112,13 +142,13 @@ markers = [
 ]
 addopts = """\
     --doctest-modules \
-    --cov=src/mypackage \
+    --cov=src/argminax \
     --cov-report=term-missing \
     --cov-report=xml:coverage.xml\
 """
 
 [tool.coverage.run]
-source = ["src/mypackage"]
+source = ["src/argminax"]
 omit = ["tests/*"]
 
 [tool.coverage.report]
@@ -135,7 +165,7 @@ exclude_also = [
 #   uv run poe            # list every task with its help text
 #   uv run poe install    # first run: `uv run` syncs the dev group, so poe exists
 # Extra arguments are passed through to the underlying command, e.g.
-#   uv run poe test tests/test_stats.py -k summarize
+#   uv run poe test tests/test_exceptions.py -k stdlib
 # ---------------------------------------------------------------------------
 [tool.poe]
 # Tasks call `uv run --group …` themselves, exactly as CI does, so poe must not
@@ -146,7 +176,7 @@ envfile = { optional = ".env" }
 
 [tool.poe.env]
 # Overridable from .env or the shell.
-PKGROOT.default = "src/mypackage"
+PKGROOT.default = "src/argminax"
 TYPECHECK_EXTRA.default = "scripts"
 
 # --- Meta -------------------------------------------------------------------

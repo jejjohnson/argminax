@@ -1,32 +1,27 @@
 # API Reference
 
-Everything listed in `mypackage.__all__` is importable from the top level:
+Everything listed in `argminax.__all__` is importable from the top level, and each area of the library is a public module that re-exports its private implementation in `argminax._src`:
 
 ```python
-import mypackage as mp
+import argminax as amx
 
-mp.summarize(...)  # same object as mypackage.stats.summarize
+amx.ArgminaxError  # the base of every argminax error
 ```
 
-The submodules below are an implementation detail you are welcome to reach
-into, but never have to. The [capability index](capabilities.md) lists every
-public name on one page, with a one-line summary each.
+The [capability index](capabilities.md) lists every public name on one page, with a one-line summary each, together with the public API of JAX, Equinox, lineax, optimistix and gaussx.
 
 ## Modules
 
 | Module | Contents |
 |---|---|
-| [Statistics](stats.md) | `summarize`, `Summary`, `quantile`, `zscores`, `RunningStats` |
-| [Smoothing](smoothing.md) | `moving_average`, `exponential_moving_average`, `median_filter`, `Padding` |
-| [Transforms](transforms.md) | `Standardize`, `MinMaxScale`, `Clip`, `MovingAverage`, `Pipeline`, `chain` |
-| [Utilities](utils.md) | `as_floats`, `require_non_empty`, `require_positive`, `Window`, `timer` |
-| [Protocols](typing.md) | `Series`, `Transform`, `Fittable` |
-| [Exceptions](exceptions.md) | `MypackageError`, `ValidationError`, `EmptySeriesError`, `NotFittedError` |
-| [CLI](cli.md) | `main`, `build_parser` |
+| [Type aliases](typing.md) | `Objective`, `Residuals` |
+| [Exceptions](exceptions.md) | `ArgminaxError`, `ValidationError`, `MissingExtraError` |
+
+`argminax.adjoint` and `argminax.curvature` arrive in Wave 1, `argminax.diagnose` in Wave 2 and `argminax.solve` in Wave 3, each with its own page.
 
 ## Package overview
 
-::: mypackage
+::: argminax
     options:
       members: false
       show_root_heading: false
