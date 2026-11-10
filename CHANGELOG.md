@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.0.4](https://github.com/jejjohnson/argminax/compare/v0.0.3...v0.0.4) (2026-11-10)
+
+
+### Features
+
+* **solve:** add dual_solve, the observation-space solve, and its incremental outer loop ([#46](https://github.com/jejjohnson/argminax/issues/46)) ([42b3197](https://github.com/jejjohnson/argminax/commit/42b3197ddb971336c8668b2847d04cddd4371463)), closes [#24](https://github.com/jejjohnson/argminax/issues/24)
+* **solve:** add GaussNewtonCG, Gauss–Newton and Levenberg–Marquardt with a matrix-free inner CG ([#43](https://github.com/jejjohnson/argminax/issues/43)) ([d9d07e9](https://github.com/jejjohnson/argminax/commit/d9d07e968c9a644e9195aec811944034e1c33ab0)), closes [#23](https://github.com/jejjohnson/argminax/issues/23)
+* **solve:** add Reparametrised, positive and bounded states by a change of variable ([#47](https://github.com/jejjohnson/argminax/issues/47)) ([b3bbbf1](https://github.com/jejjohnson/argminax/commit/b3bbbf15c5a057c867ecf035f2b06be0d28e1a74)), closes [#26](https://github.com/jejjohnson/argminax/issues/26)
+
 ## [0.0.3](https://github.com/jejjohnson/argminax/compare/v0.0.2...v0.0.3) (2026-11-10)
 
 
