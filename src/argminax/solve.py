@@ -9,6 +9,7 @@ Every solver here is an optimistix solver, so ``optx.minimise`` and
 | `GaussNewtonCG` | Gauss–Newton and Levenberg–Marquardt with a matrix-free inner CG |
 | `dual_solve` | the observation-space (PSAS) increment, CG on (H B Hᵀ + R) λ = d |
 | `incremental_dual_solve` | its outer loop for a nonlinear forward model |
+| `Reparametrised` | positive and bounded states, solved in an unconstrained u |
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from __future__ import annotations
 from argminax._src.solve import (
     DualSolution,
     GaussNewtonCG,
+    Reparametrised,
     dual_solve,
     incremental_dual_solve,
 )
@@ -24,6 +26,7 @@ from argminax._src.solve import (
 __all__ = [
     "DualSolution",
     "GaussNewtonCG",
+    "Reparametrised",
     "dual_solve",
     "incremental_dual_solve",
 ]
