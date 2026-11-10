@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.5](https://github.com/jejjohnson/argminax/compare/v0.0.4...v0.0.5) (2026-11-10)
+
+
+### Features
+
+* **solve:** add laplace_mode, with its covariance and site forms ([#49](https://github.com/jejjohnson/argminax/issues/49)) ([eabc2ef](https://github.com/jejjohnson/argminax/commit/eabc2ef7e19a8f154619c6c4e87f38467aa7c49a)), closes [#25](https://github.com/jejjohnson/argminax/issues/25)
+
 ## [0.0.4](https://github.com/jejjohnson/argminax/compare/v0.0.3...v0.0.4) (2026-11-10)
 
 

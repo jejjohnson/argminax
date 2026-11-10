@@ -1,6 +1,6 @@
 [project]
 name = "argminax"
-version = "0.0.4"
+version = "0.0.5"
 description = "Optimisation with uncertainty at the minimum for JAX: solvers, curvature, retrieval diagnostics and minimiser adjoints on optimistix and gaussx."
 authors = [
     {name="J. Emmanuel Johnson", email="jemanjohnson34@gmail.com"},
