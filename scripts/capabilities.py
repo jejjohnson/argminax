@@ -89,7 +89,12 @@ UPSTREAM_BLURB: dict[str, str] = {
 
 # Names two homes may bind to different objects, and why, e.g.
 # {"Mean": "stats.Mean is the statistic, aggregation.Mean the reducer"}.
-ALLOWED_SHARED_NAMES: dict[str, str] = {}
+ALLOWED_SHARED_NAMES: dict[str, str] = {
+    "laplace_mode": (
+        "argminax.solve.laplace_mode replaces gaussx.laplace_mode, which gaussx "
+        "deprecates in its favour (gaussx#814)"
+    ),
+}
 
 _AUTOREF = re.compile(r"\[([^\]]+)\]\[[^\]]*\]")
 # A full stop that ends a sentence (not "e.g." / "i.e." / "etc.").
