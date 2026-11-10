@@ -24,7 +24,7 @@ classifiers = [
 # elsewhere in the stack.
 dependencies = [
     "equinox>=0.13.8",
-    "gaussx @ git+https://github.com/jejjohnson/gaussx@v0.6.12",
+    "gaussx @ git+https://github.com/jejjohnson/gaussx@3012f3b0217672a46156631464caa54c2ab73a75",
     "jax>=0.10",
     "jaxlib>=0.10",
     "jaxtyping>=0.3",
@@ -36,6 +36,9 @@ dependencies = [
 # Stochastic Lanczos quadrature for log-determinants, imported lazily by the
 # functions that need it.
 matfree = ["matfree>=0.6.2"]
+# The GMRF priors of laplace_mode's precision form are numpyro distributions in
+# gaussx, which exports them (and its Laplace step) only when numpyro is installed.
+numpyro = ["numpyro>=0.21"]
 
 [project.urls]
 Repository = "https://github.com/jejjohnson/argminax"
@@ -54,6 +57,8 @@ test = [
     # problem sizes and seeds of the property tests.
     "scipy>=1.14",
     "hypothesis>=6.100",
+    # laplace_mode's precision form, tested against gaussx's GMRF priors
+    "numpyro>=0.21",
 ]
 lint = [
     "ruff>=0.15.22",
@@ -111,7 +116,7 @@ ignore = ["E402", "E721", "E731", "E741", "F722"]
 # Docstrings and comments carry Unicode maths (eman-style-math, "Maths
 # notation" in AGENTS.md), so the maths glyphs that look like ASCII are allowed,
 # and the en dash of "Gauss–Newton".
-allowed-confusables = ["−", "–", "×", "∗", "∣", "α", "γ", "ι", "ν", "ο", "ρ", "σ", "υ", "𝒩", "ℝ", "′"]
+allowed-confusables = ["−", "–", "×", "∗", "∣", "α", "γ", "ι", "ν", "ο", "ρ", "σ", "υ", "𝒩", "ℝ", "′", "𝒥"]
 
 [tool.ruff.lint.isort]
 combine-as-imports = true
