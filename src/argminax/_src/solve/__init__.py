@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from argminax._src.solve._dual import DualSolution, dual_solve, incremental_dual_solve
 from argminax._src.solve._gauss_newton import GaussNewtonCG
+from argminax._src.solve._reparam import Reparametrised
 
 
 __all__ = [
     "DualSolution",
     "GaussNewtonCG",
+    "Reparametrised",
     "dual_solve",
     "incremental_dual_solve",
 ]
