@@ -46,6 +46,15 @@ class Reparametrised(eqx.Module):
     averaging kernel or degrees of freedom computed from the posterior in u
     are those of u, not of x.
 
+    paramax (used by somax and gauss_flows) stores a constrained parameter
+    inside a model as ``paramax.Parameterize(fn, u)``, applied by
+    ``paramax.unwrap``. To keep one transform across a model and a
+    retrieval, pass this class's `forward` as ``fn``:
+    ``paramax.Parameterize(Reparametrised("softplus").forward, u)``. argminax
+    does not depend on paramax: here u is the solver's state, which optimistix
+    iterates on directly, and `inverse`, `derivative`, `push_forward` and
+    `sample` have no paramax counterpart.
+
     Attributes:
         transform: ``"exp"``, ``"softplus"`` or ``"sigmoid"``.
         lower: The lower bound a.
