@@ -18,8 +18,13 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.13"
+      # A release that bumps pyproject.toml without uv.lock leaves the lockfile
+      # stale; catch it on every PR (the release PR is checked in
+      # release-please.yml, since GitHub starts no workflows for it).
+      - name: Check uv.lock matches pyproject.toml
+        run: uv lock --check
       - name: Install lint dependencies
-        run: uv sync --group lint
+        run: uv sync --locked --group lint
       - name: Run ruff check
         run: uv run --group lint ruff check .
       - name: Run ruff format check
