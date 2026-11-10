@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.0.3](https://github.com/jejjohnson/argminax/compare/v0.0.2...v0.0.3) (2026-11-10)
+
+
+### Features
+
+* **curvature:** let Laplace hold a gridded mode and keep the precision's structure in its covariance ([#36](https://github.com/jejjohnson/argminax/issues/36)) ([0c6d312](https://github.com/jejjohnson/argminax/commit/0c6d3128513f51139564d5454ffea07ebfd37ca6))
+* **diagnose:** add the averaging kernel, degrees of freedom for signal and information content ([#38](https://github.com/jejjohnson/argminax/issues/38)) ([3f3b0fb](https://github.com/jejjohnson/argminax/commit/3f3b0fb9fa671b47eb9f773a695b86ce8bc4dfa5)), closes [#20](https://github.com/jejjohnson/argminax/issues/20)
+* **diagnose:** add the evidence at the minimum and the prior-precision search ([#39](https://github.com/jejjohnson/argminax/issues/39)) ([13fd7e9](https://github.com/jejjohnson/argminax/commit/13fd7e924cd9b55e5f7fe2144ea255fbf33db96a))
+
 ## [0.0.2](https://github.com/jejjohnson/argminax/compare/v0.0.1...v0.0.2) (2026-11-09)
 
 
