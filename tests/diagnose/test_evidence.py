@@ -144,15 +144,37 @@ def _fit_term(eigenvalues, rotated_mode, rotated_gradient):
     return fit
 
 
+def _assert_same_optimum(eigenvalues, fit, best, reference) -> None:
+    """λ̂ is pyrox's maximiser: same evidence, and λ to the precision a maximum has.
+
+    Near a smooth maximum E(log λ) ≈ E* − ½ |E''| δ², so evidence values that
+    agree to ε_mach |E*| locate log λ only to √(2 ε_mach |E*| / |E''|), about
+    4e-8 here; the eigendecomposition rounds differently across platforms, so
+    the maximiser moves by that much (2.8e-8 relative on CI). The evidence is
+    what the search maximises, so it must agree to round-off.
+    """
+    size = eigenvalues.shape[0]
+
+    def log_evidence(lam):
+        # f(λ) + (N/2) log λ − ½ ∑ᵢ log(gᵢ + λ)
+        return (
+            fit(lam)
+            + 0.5 * size * jnp.log(lam)
+            - 0.5 * jnp.sum(jnp.log(eigenvalues + lam))
+        )
+
+    ours, theirs = log_evidence(best), log_evidence(jnp.asarray(reference))
+    assert ours >= theirs - 1e-12 * abs(theirs)
+    assert abs(jnp.log(best) - math.log(reference)) <= 1e-6
+
+
 def test_port_reproduces_pyrox_with_the_full_curvature() -> None:
     design, targets, stale, ggn, gradient = _stale_blr()
     eigenvalues, rotation = jnp.linalg.eigh(ggn)
     eigenvalues = jnp.clip(eigenvalues, 0.0)
     fit = _fit_term(eigenvalues, rotation.T @ stale, rotation.T @ gradient)
     best = optimize_prior_precision(eigenvalues, fit)
-    # the golden-section bracket is ~1e-21 wide in log λ; the eigenbasis
-    # differs from gaussx.eig's only by round-off
-    assert _relative(best, PYROX_LAMBDA["full"]) <= 1e-8
+    _assert_same_optimum(eigenvalues, fit, best, PYROX_LAMBDA["full"])
     # and it maximises the exact BLR evidence: no worse than a fine grid
     grid = jnp.linspace(-6.0, 6.0, 4001)
     values = jax.vmap(lambda g: _blr_log_evidence(design, targets, jnp.exp(g)))(grid)
@@ -163,7 +185,7 @@ def test_port_reproduces_pyrox_with_the_diagonal_curvature() -> None:
     _, _, stale, ggn, gradient = _stale_blr()
     fit = _fit_term(jnp.diag(ggn), stale, gradient)
     best = optimize_prior_precision(jnp.diag(ggn), fit)
-    assert _relative(best, PYROX_LAMBDA["diag"]) <= 1e-8
+    _assert_same_optimum(jnp.diag(ggn), fit, best, PYROX_LAMBDA["diag"])
 
 
 def test_search_traces_under_jit_and_vmap() -> None:
