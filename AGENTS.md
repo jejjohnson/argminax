@@ -118,6 +118,7 @@ Most rules here are tests, so CI tells you when one breaks. Read a test's docstr
 | `tests/conftest.py` | Every test runs with `jax_enable_x64` on |
 | `tests/test_harness.py` | The reference harness in `tests/_harness.py`: the linear-Gaussian closed forms agree with each other (Ŝ with the inverse Hessian of J, the evidence with the Laplace identity) to 1e-12, and each helper passes on its exact case and fails on a perturbed one |
 | The `bare-install` job in `ci.yml` | A plain `pip install .` imports argminax without the test group |
+| `uv lock --check` in `lint.yml`, and the checks in `release-please.yml` | `uv.lock` matches `pyproject.toml` on every PR; on the release PR, which GitHub runs no workflows for, the lockfile and the tests are checked from the release job and posted as the "release PR checks" check run |
 | `tests/test_build_docs.py` | The two-tool docs pipeline: inventory parsing, anchor repair, link checking, the inventory port and the absolute nav URL in `docs/myst.yml`, the files copied to the site root (`ROOT_FILES`) |
 | `[tool.coverage.report] fail_under = 90` | Coverage of `src/argminax` in every coverage-enabled run (CI, `uv run poe test-cov`) |
 | `strict_markers = true` | Only the registered tier markers (`slow`, `integration`) exist |
