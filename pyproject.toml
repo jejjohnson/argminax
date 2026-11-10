@@ -24,7 +24,7 @@ classifiers = [
 # elsewhere in the stack.
 dependencies = [
     "equinox>=0.13.8",
-    "gaussx @ git+https://github.com/jejjohnson/gaussx@3012f3b0217672a46156631464caa54c2ab73a75",
+    "gaussx @ git+https://github.com/jejjohnson/gaussx@v0.6.13",
     "jax>=0.10",
     "jaxlib>=0.10",
     "jaxtyping>=0.3",
