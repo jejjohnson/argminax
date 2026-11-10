@@ -22,6 +22,7 @@ SUBMODULES = [
     "curvature",
     "diagnose",
     "exceptions",
+    "solve",
 ]
 
 # Packages: only the private tree so far; a public module that grows into a

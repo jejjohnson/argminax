@@ -75,6 +75,7 @@ nav:
   - Adjoints: adjoint.md
   - Curvature: curvature.md
   - Diagnostics: diagnose.md
+  - Solvers: solve.md
   - Type aliases: typing.md
   - Exceptions: exceptions.md
 
