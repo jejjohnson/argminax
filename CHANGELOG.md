@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.6](https://github.com/jejjohnson/argminax/compare/v0.0.5...v0.0.6) (2026-11-10)
+
+
+### Bug Fixes
+
+* **deps:** pin gaussx to its v0.6.13 release instead of a pull-request commit ([#52](https://github.com/jejjohnson/argminax/issues/52)) ([5281c39](https://github.com/jejjohnson/argminax/commit/5281c3964fe2fac86acaeee6ce17ad1842ae8a97))
+
 ## [0.0.5](https://github.com/jejjohnson/argminax/compare/v0.0.4...v0.0.5) (2026-11-10)
 
 
