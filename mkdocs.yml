@@ -74,6 +74,7 @@ nav:
   - Capability index: capabilities.md
   - Adjoints: adjoint.md
   - Curvature: curvature.md
+  - Diagnostics: diagnose.md
   - Type aliases: typing.md
   - Exceptions: exceptions.md
 

@@ -20,6 +20,7 @@ SUBMODULES = [
     "_typing",
     "adjoint",
     "curvature",
+    "diagnose",
     "exceptions",
 ]
 
