@@ -61,7 +61,7 @@ Before writing a helper, a solver, an operator or a diagnostic, find out whether
 
 | You are about to write… | Use instead |
 |---|---|
-| A solve loop around `optx.minimise` internals, a hand-rolled BFGS or Newton | `optx.minimise`, `optx.least_squares` with an optimistix solver; argminax's own solvers arrive in Wave 3 |
+| A solve loop around `optx.minimise` internals, a hand-rolled BFGS or Newton | `optx.minimise`, `optx.least_squares` with an optimistix solver; `argminax.solve.GaussNewtonCG` for Gauss–Newton or Levenberg–Marquardt with a matrix-free inner CG |
 | `jnp.linalg.solve`, `jnp.linalg.inv`, a hand-rolled CG | lineax (`lx.linear_solve` with `lx.CG`, `lx.Cholesky`, …) or the gaussx solve for the operator |
 | A dense `K.T @ inv(S_eps) @ K + inv(S_a)` | `gaussx.gauss_newton_operator` (matrix-free and PSD-tagged) or `gaussx.gauss_newton_precision` for a small dense Jacobian; `argminax.curvature` builds Ŝ on them in Wave 1 (#17) |
 | A log-determinant | gaussx (`gaussx.logdet` and the structured forms); `matfree` behind the `argminax[matfree]` extra for stochastic Lanczos quadrature |
