@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 import pytest
-from _regression import run
+from _regression import REFERENCE, REGRESSION, run
 
 from argminax import ValidationError
 from argminax.blr import IVONState, ivon
@@ -16,24 +16,24 @@ from argminax.blr import IVONState, ivon
 _OPTIONS = dict(beta1=0.9, beta2=0.99, weight_decay=0.1, clip_radius=1.0, ess=30.0)
 
 
-def test_reproduces_optax_bayes(reference, regression) -> None:
-    start = regression.tree(regression.start)
+def test_reproduces_optax_bayes() -> None:
+    start = REGRESSION.tree(REGRESSION.start)
     iterates, _ = run(
         ivon(0.05, **_OPTIONS),
         start,
-        regression.tree_cost,
-        regression.flat,
+        REGRESSION.tree_cost,
+        REGRESSION.flat,
         pass_params=True,
     )
-    np.testing.assert_allclose(iterates, reference["ivon"], rtol=1e-10)
+    np.testing.assert_allclose(iterates, REFERENCE["ivon"], rtol=1e-10)
 
 
-def test_reproduces_optax_bayes_without_params(reference, regression) -> None:
-    start = regression.tree(regression.start)
+def test_reproduces_optax_bayes_without_params() -> None:
+    start = REGRESSION.tree(REGRESSION.start)
     iterates, _ = run(
-        ivon(0.05, **_OPTIONS), start, regression.tree_cost, regression.flat
+        ivon(0.05, **_OPTIONS), start, REGRESSION.tree_cost, REGRESSION.flat
     )
-    np.testing.assert_allclose(iterates, reference["ivon_no_params"], rtol=1e-10)
+    np.testing.assert_allclose(iterates, REFERENCE["ivon_no_params"], rtol=1e-10)
 
 
 def test_converges_to_the_weight_decay_minimiser() -> None:
