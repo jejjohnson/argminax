@@ -124,18 +124,6 @@ Nothing here is specific to this model. Swap `forward` for a radiative transfer 
 
 argminax is Core tier 1 of the [GeoStack](https://github.com/jejjohnson/geostack): it imports gaussx (tier 0) and extends optimistix, and everything that minimises can import it. vardax, radtrax, plumax, pyrox-gp, pyrox-lgm and pyrox-nn take their solvers, curvature and diagnostics from it. The design is the [argminax design page](https://github.com/jejjohnson/geostack/blob/main/docs/design/libraries/argminax.md).
 
-## Status
-
-The package, the adjoints and curvature, the retrieval diagnostics and the solvers are in; the stack's libraries are switching over to them. The backlog is five wave epics under [geostack#134](https://github.com/jejjohnson/geostack/issues/134).
-
-| Wave | Delivers | Epic | State |
-|---|---|---|---|
-| 0 | the package and the reference harness (linear-Gaussian closed forms, SciPy, finite differences, sampling bounds) | [#8](https://github.com/jejjohnson/argminax/issues/8) | done |
-| 1 | `KStep` and `OneStep` adjoints and the Laplace covariance, moved in from vardax | [#9](https://github.com/jejjohnson/argminax/issues/9) | done |
-| 2 | the averaging kernel, degrees of freedom, information content and evidence | [#10](https://github.com/jejjohnson/argminax/issues/10) | done |
-| 3 | `GaussNewtonCG`, the dual solve, `laplace_mode` and reparametrised bounds | [#11](https://github.com/jejjohnson/argminax/issues/11) | done |
-| 4 | the stack's libraries switch to argminax | [#12](https://github.com/jejjohnson/argminax/issues/12) | open |
-
 ## Development
 
 ```bash
