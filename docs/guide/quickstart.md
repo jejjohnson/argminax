@@ -8,7 +8,7 @@ argminax is not on PyPI yet; install it from GitHub:
 pip install "argminax @ git+https://github.com/jejjohnson/argminax.git"
 ```
 
-That brings in JAX, Equinox, lineax, optimistix and gaussx. The `matfree` extra adds stochastic Lanczos quadrature for log-determinants of large operators; the functions that need it import it when they are called, and raise [`MissingExtraError`](xref:api#argminax.MissingExtraError) naming the extra when it is missing.
+That brings in JAX, Equinox, lineax, optimistix and gaussx. The `matfree` extra adds stochastic Lanczos quadrature for log-determinants of large operators; the functions that need it import it when they are called, and raise [`MissingExtraError`](xref:api#argminax.MissingExtraError) naming the extra when it is missing. The `optax` extra adds optax, for the transforms of `argminax.blr`, which carry the Gaussian during training and have [their own guide](blr.md).
 
 ```python
 import argminax
