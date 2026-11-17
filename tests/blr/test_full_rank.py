@@ -1,7 +1,7 @@
 """Tests for `blr_full_rank` and `newton`.
 
 The port tests compare against optax_bayes's ``blr_full_rank_for_loss`` and
-``newton_for_loss`` on the regression of ``_regression.py``; the rest pin the
+``newton_for_loss`` on the regression of ``_REGRESSION.py``; the rest pin the
 step to its closed forms: exact recovery of a linear-Gaussian posterior in one
 step (gate G1 of #58), `gaussx.blr_full_update` on the log-joint, and the
 shift the damping gives the fixed point.
@@ -16,7 +16,7 @@ import lineax as lx
 import numpy as np
 import pytest
 from _harness import linear_gaussian_problem
-from _regression import run
+from _regression import REFERENCE, REGRESSION, run
 from hypothesis import given, settings, strategies as st
 
 from argminax import ValidationError
@@ -46,30 +46,30 @@ def _retrieval(n_state: int = 4, n_obs: int = 6):
     return cost, curvature, delta, problem.x_a, precision, mean
 
 
-def test_ggn_reproduces_optax_bayes(reference, regression) -> None:
+def test_ggn_reproduces_optax_bayes() -> None:
     optimiser = blr_full_rank(
-        0.05, prior_precision=0.5, prior_mean=regression.prior_mean, damping=1e-6
+        0.05, prior_precision=0.5, prior_mean=REGRESSION.prior_mean, damping=1e-6
     )
-    iterates, _ = run(optimiser, regression.start, regression.cost)
-    np.testing.assert_allclose(iterates, reference["full_ggn"], rtol=1e-10)
+    iterates, _ = run(optimiser, REGRESSION.start, REGRESSION.cost)
+    np.testing.assert_allclose(iterates, REFERENCE["full_ggn"], rtol=1e-10)
 
 
-def test_exact_curvature_reproduces_optax_bayes(reference, regression) -> None:
+def test_exact_curvature_reproduces_optax_bayes() -> None:
     optimiser = blr_full_rank(
         0.3,
         prior_precision=0.5,
-        prior_mean=regression.prior_mean,
-        curvature=regression.curvature,
+        prior_mean=REGRESSION.prior_mean,
+        curvature=REGRESSION.curvature,
         damping=1e-6,
     )
-    iterates, _ = run(optimiser, regression.start, regression.cost)
-    np.testing.assert_allclose(iterates, reference["full_exact"], rtol=1e-10)
+    iterates, _ = run(optimiser, REGRESSION.start, REGRESSION.cost)
+    np.testing.assert_allclose(iterates, REFERENCE["full_exact"], rtol=1e-10)
 
 
-def test_newton_reproduces_optax_bayes(reference, regression) -> None:
-    optimiser = newton(regression.curvature, damping=1e-6)
-    iterates, _ = run(optimiser, regression.start, regression.cost)
-    np.testing.assert_allclose(iterates, reference["newton"], rtol=1e-10)
+def test_newton_reproduces_optax_bayes() -> None:
+    optimiser = newton(REGRESSION.curvature, damping=1e-6)
+    iterates, _ = run(optimiser, REGRESSION.start, REGRESSION.cost)
+    np.testing.assert_allclose(iterates, REFERENCE["newton"], rtol=1e-10)
 
 
 def test_one_exact_step_recovers_the_linear_gaussian_posterior() -> None:
@@ -154,18 +154,18 @@ def test_newton_minimises_a_quadratic_cost() -> None:
     assert float(jnp.linalg.norm(jax.grad(cost)(theta))) < 1e-8
 
 
-def test_jit_and_scan_agree_with_an_eager_loop(regression) -> None:
+def test_jit_and_scan_agree_with_an_eager_loop() -> None:
     optimiser = blr_full_rank(0.05, prior_precision=0.5)
-    eager, _ = run(optimiser, regression.start, regression.cost)
+    eager, _ = run(optimiser, REGRESSION.start, REGRESSION.cost)
 
     def step(carry, _):
         theta, state = carry
-        updates, state = optimiser.update(jax.grad(regression.cost)(theta), state)
+        updates, state = optimiser.update(jax.grad(REGRESSION.cost)(theta), state)
         return (theta + updates, state), theta + updates
 
     _, scanned = jax.jit(
         lambda carry: jax.lax.scan(step, carry, length=eager.shape[0])
-    )((regression.start, optimiser.init(regression.start)))
+    )((REGRESSION.start, optimiser.init(REGRESSION.start)))
     np.testing.assert_allclose(scanned, eager, rtol=1e-10)
 
 
@@ -186,14 +186,12 @@ def test_float32_parameters_stay_float32() -> None:
     [lx.Cholesky(), gx.CGSolver(rtol=1e-12, atol=1e-12)],
     ids=["lineax-cholesky", "gaussx-cg"],
 )
-def test_a_lineax_solver_and_a_gaussx_strategy_agree_with_the_default(
-    solver, regression
-) -> None:
-    grads = jax.grad(regression.cost)(regression.start)
+def test_a_lineax_solver_and_a_gaussx_strategy_agree_with_the_default(solver) -> None:
+    grads = jax.grad(REGRESSION.cost)(REGRESSION.start)
     updates = {}
     for name, choice in (("default", None), ("chosen", solver)):
         optimiser = blr_full_rank(0.2, prior_precision=0.5, solver=choice)
-        state = optimiser.init(regression.start)
+        state = optimiser.init(REGRESSION.start)
         updates[name], _ = optimiser.update(grads, state)
     np.testing.assert_allclose(updates["chosen"], updates["default"], rtol=1e-8)
 
