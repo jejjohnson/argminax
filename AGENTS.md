@@ -27,7 +27,7 @@ It is one package, `src/argminax/`. Logic lives in `argminax._src.<module>`, and
 
 ### Boundaries
 
-- **Core tier 1.** argminax imports JAX, Equinox, lineax, optimistix, jaxtyping and gaussx (tier 0), and extends optimistix. It never imports pipekit, pipekit-cycle, integrix, vardax, pyrox or any GeoModels library (radtrax, plumax, somax, …): those import argminax. `to_optimistix_adjoint` reads pipekit-cycle's adjoint specs by class name for exactly this reason (#16).
+- **Core tier 1.** argminax imports JAX, Equinox, einx, lineax, optimistix, jaxtyping and gaussx (tier 0), and extends optimistix. It never imports pipekit, pipekit-cycle, integrix, vardax, pyrox or any GeoModels library (radtrax, plumax, somax, …): those import argminax. `to_optimistix_adjoint` reads pipekit-cycle's adjoint specs by class name for exactly this reason (#16).
 - **One step is gaussx's; the loop is argminax's.** A single Newton or Gauss–Newton step's algebra (`newton_update`, `gauss_newton_precision`), structured solves and log-determinants come from gaussx; argminax iterates them to a tolerance and reads the curvature at the end.
 - **The caller owns the cost.** A consumer passes J or its residuals r in, in optimistix's `fn(y, args)` form; argminax never builds a forward model, an observation operator or a covariance from data.
 - **optimistix is pinned to one minor version** (`optimistix>=0.1.0,<0.2`), because `KStep.apply` reads the private layout of optimistix's solve inputs. Raising the pin means re-running the adjoint tests against the new layout.
@@ -46,7 +46,8 @@ Each foundation brings a rule. Breaking one runs fine on your example and fails 
 | **lineax** | linear solves, and the PSD tags on every curvature operator | Solve, never invert: no `jnp.linalg.inv`, and no dense `jnp.linalg.solve` in library code. A Gauss–Newton or Laplace operator carries `lx.positive_semidefinite_tag` (or `symmetric_tag`), and nothing claims PSD that is not. |
 | **optimistix** | `minimise`, `least_squares`, `root_find`, the solver and adjoint protocols, `RESULTS` | argminax's solvers subclass optimistix's abstract solvers and its adjoints subclass `optx.AbstractAdjoint`; a non-converged solve is reported through `RESULTS`, never an exception. Check `solution.result` before trusting a gradient through the solve. |
 | **gaussx** | structured operators, solves, log-determinants and one step's algebra | Curvature is returned as a gaussx operator and never formed densely in library code. |
-| **jaxtyping** | array annotations | Named dims from the shared vocabulary ("House style"). |
+| **jaxtyping** | array annotations | Named dims from the shared vocabulary ("House style"): `state` for the optimisation variable x and anything indexed like it, `obs` for observation-space vectors, `residual` for stacked whitened residuals, `member` for Monte Carlo draws and Hutchinson probes, and `*state` for a state of any shape. |
+| **einx** | reductions, contractions and rearranges on dense arrays | No `axis=`, `.T`, `reshape` or `[:, None]` on a dense array; a lineax or gaussx operator keeps its own methods (`.mv`, `.T`) and is never materialised to use einx. |
 | **SciPy, hypothesis** (test group) | references for the nonlinear solvers; drawn problem sizes and seeds | Test oracles, not runtime dependencies: library code never imports them, and a bare install imports argminax without the test group (SciPy is installed anyway, as a dependency of JAX). |
 | **pytest + `--doctest-modules`** | the suite and every docstring `Examples:` block | An example's expected output is what the code prints; a stale example is a failing test. |
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 
+import einx
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, ArrayLike, Float, PRNGKeyArray
@@ -83,6 +84,16 @@ def evidence(
         >>> bool(jnp.allclose(log_evidence.value, exact))
         True
 
+        The stochastic path needs at least two probes:
+
+        >>> import jax
+        >>> evidence(  # doctest: +IGNORE_EXCEPTION_DETAIL
+        ...     posterior, 0.25, 0.0, num_probes=1, key=jax.random.key(0)
+        ... )
+        Traceback (most recent call last):
+        ...
+        ValidationError: 'num_probes' must be an integer of at least 2, got 1
+
     References:
         Rodgers, C. D. (2000). Inverse Methods for Atmospheric Sounding,
         chapter 2. MacKay, D. J. C. (2003). Information Theory, Inference,
@@ -92,15 +103,20 @@ def evidence(
     log_det = _logdet_estimate(
         posterior, num_probes=num_probes, num_matvecs=num_matvecs, key=key
     )
-    # −J(x̂) − ½ (log |Ĥ| + log |Sₐ| + log |2π Sε|)
-    value = -jnp.asarray(cost_at_mode) - 0.5 * (
-        log_det.value + jnp.asarray(prior_cov_logdet) + jnp.asarray(obs_cov_logdet)
-    )
-    return TraceEstimate(value=value, stderr=0.5 * log_det.stderr)
+    cost = jnp.asarray(cost_at_mode)
+    prior_log_det = jnp.asarray(prior_cov_logdet)
+    obs_log_det = jnp.asarray(obs_cov_logdet)
+    # log |Ĥ| + log |Sₐ| + log |2π Sε|
+    total_log_det = log_det.value + prior_log_det + obs_log_det
+    # log p(y) ≈ −J(x̂) − ½ (log |Ĥ| + log |Sₐ| + log |2π Sε|)
+    value = -cost - 0.5 * total_log_det
+    # only log |Ĥ| is estimated, so it carries the whole error
+    stderr = 0.5 * log_det.stderr
+    return TraceEstimate(value=value, stderr=stderr)
 
 
 def optimize_prior_precision(
-    ggn_eigenvalues: Float[Array, " N"],
+    ggn_eigenvalues: Float[Array, " state"],
     fit_term: Callable[[Float[Array, ""]], Float[Array, ""]],
     *,
     num_grid: int = 4097,
@@ -157,6 +173,22 @@ def optimize_prior_precision(
         >>> bool(jnp.allclose(jnp.log(best), 4.0))
         True
 
+        A fit term f(λ) = −λ and g = (1,): the evidence peaks where
+        2λ² + 2λ − 1 = 0, at λ̂ = (√3 − 1)/2.
+
+        >>> best = optimize_prior_precision(jnp.ones(1), lambda lam: -lam)
+        >>> bool(jnp.allclose(best, (jnp.sqrt(3.0) - 1.0) / 2.0, rtol=1e-4))
+        True
+
+        A grid needs three points to bracket a maximum:
+
+        >>> optimize_prior_precision(  # doctest: +IGNORE_EXCEPTION_DETAIL
+        ...     jnp.ones(2), lambda lam: 0.0 * lam, num_grid=2
+        ... )
+        Traceback (most recent call last):
+        ...
+        ValidationError: 'num_grid' must be an integer of at least 3, got 2
+
     References:
         MacKay, D. J. C. (1992). Bayesian interpolation. Neural Computation
         4(3), 415–447.
@@ -176,39 +208,49 @@ def optimize_prior_precision(
     size = eigenvalues.shape[0]
 
     def log_evidence(log_lam: Float[Array, ""]) -> Float[Array, ""]:
+        # λ = exp(log λ)
         lam = jnp.exp(log_lam)
+        # log(gᵢ + λ)
+        log_shifted = jnp.log(eigenvalues + lam)
+        # ∑ᵢ log(gᵢ + λ) = log |Ĥ_λ|
+        log_det = einx.sum("state ->", log_shifted)
         # f(λ) + (N/2) log λ − ½ ∑ᵢ log(gᵢ + λ)
-        return (
-            fit_term(lam)
-            + 0.5 * size * log_lam
-            - 0.5 * jnp.sum(jnp.log(eigenvalues + lam))
-        )
+        return fit_term(lam) + 0.5 * size * log_lam - 0.5 * log_det
 
     # --- grid over log λ ---
     if bounds is None:
-        reach = 0.5 * math.log(float(jnp.finfo(dtype).max))
+        largest = float(jnp.finfo(dtype).max)
+        # ±½ log of the largest float keeps λ and every term finite
+        reach = 0.5 * math.log(largest)
         bounds = (-reach, reach)
     low, high = bounds
     grid = jnp.linspace(low, high, num_grid, dtype=dtype)
-    best = jnp.argmax(jax.vmap(log_evidence)(grid))
+    grid_evidence = jax.vmap(log_evidence)(grid)
+    best = jnp.argmax(grid_evidence)
     step = grid[1] - grid[0]
+    # the grid cell either side of the best point, clipped to the range
     lower = jnp.maximum(grid[best] - step, low)
     upper = jnp.minimum(grid[best] + step, high)
 
     # --- golden-section refinement in the best cell ---
+    # φ − 1 = (√5 − 1)/2
     ratio = (math.sqrt(5.0) - 1.0) / 2.0
 
     def golden(
         _: int, bracket: tuple[Float[Array, ""], Float[Array, ""]]
     ) -> tuple[Float[Array, ""], Float[Array, ""]]:
         left, right = bracket
-        inner_left = right - ratio * (right - left)
-        inner_right = left + ratio * (right - left)
+        width = right - left
+        # the two interior points, a fraction φ − 1 in from each end
+        inner_left = right - ratio * width
+        inner_right = left + ratio * width
         keep_left = log_evidence(inner_left) >= log_evidence(inner_right)
-        return (
-            jnp.where(keep_left, left, inner_left),
-            jnp.where(keep_left, inner_right, right),
-        )
+        new_left = jnp.where(keep_left, left, inner_left)
+        new_right = jnp.where(keep_left, inner_right, right)
+        return new_left, new_right
 
     lower, upper = jax.lax.fori_loop(0, num_refine, golden, (lower, upper))
-    return jnp.exp(0.5 * (lower + upper)).astype(dtype)
+    # log λ̂ at the centre of the final bracket
+    midpoint = 0.5 * (lower + upper)
+    # exp in the eigenvalues' dtype, which the docstring promises
+    return jnp.exp(midpoint).astype(dtype)

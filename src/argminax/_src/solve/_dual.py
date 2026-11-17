@@ -41,8 +41,8 @@ class DualSolution(eqx.Module):
         num_steps: CG iterations of the (last) solve.
     """
 
-    value: Float[Array, " N"]
-    multiplier: Float[Array, " M"]
+    value: Float[Array, " state"]
+    multiplier: Float[Array, " obs"]
     result: lx.RESULTS
     num_steps: Int[Array, ""]
 
@@ -54,11 +54,11 @@ def _require_operator(operator: lx.AbstractLinearOperator, name: str) -> None:
 
 
 def dual_solve(
-    jvp: Callable[[Float[Array, " N"]], Float[Array, " M"]],
-    vjp: Callable[[Float[Array, " M"]], Float[Array, " N"]],
+    jvp: Callable[[Float[Array, " state"]], Float[Array, " obs"]],
+    vjp: Callable[[Float[Array, " obs"]], Float[Array, " state"]],
     background_cov: lx.AbstractLinearOperator,
     obs_cov: lx.AbstractLinearOperator,
-    innovation: Float[Array, " M"],
+    innovation: Float[Array, " obs"],
     *,
     solver: lx.AbstractLinearSolver | None = None,
 ) -> DualSolution:
@@ -119,6 +119,20 @@ def dual_solve(
         >>> bool(solution.result == lx.RESULTS.successful)
         True
 
+        The covariances must carry the PSD tag, since CG relies on it:
+
+        >>> untagged = lx.MatrixLinearOperator(jnp.eye(2))
+        >>> dual_solve(
+        ...     lambda dx: observation @ dx,
+        ...     lambda dy: observation.T @ dy,
+        ...     eye(1),
+        ...     untagged,
+        ...     jnp.array([1.0, 2.0]),
+        ... )  # doctest: +IGNORE_EXCEPTION_DETAIL
+        Traceback (most recent call last):
+        ...
+        ValidationError: 'obs_cov' must be tagged positive semidefinite
+
     References:
         Courtier, P. (1997). Dual formulation of four-dimensional variational
         assimilation. Q. J. R. Meteorol. Soc. 123, 2449. doi:10.1002/qj.49712354414.
@@ -127,28 +141,44 @@ def dual_solve(
     _require_operator(obs_cov, "obs_cov")
     structure = jax.eval_shape(lambda: innovation)
 
-    def dual_matvec(multiplier: Float[Array, " M"]) -> Float[Array, " M"]:
+    # --- the dual operator ---
+    def dual_matvec(multiplier: Float[Array, " obs"]) -> Float[Array, " obs"]:
+        # Hᵀ v
+        back_projected = vjp(multiplier)
         # B Hᵀ v
-        spread = background_cov.mv(vjp(multiplier))
-        # H B Hᵀ v + R v
-        return jvp(spread) + obs_cov.mv(multiplier)
+        spread = background_cov.mv(back_projected)
+        # H B Hᵀ v
+        observed = jvp(spread)
+        # R v
+        noise = obs_cov.mv(multiplier)
+        # (H B Hᵀ + R) v
+        return observed + noise
 
     dual_operator = lx.FunctionLinearOperator(dual_matvec, structure, _PSD)
+
+    # --- the default solver ---
     options = {}
     if solver is None:
+        # a host constant from the dtype, so the default also works under jit
+        machine_epsilon = float(jnp.finfo(innovation.dtype).eps)
         # 1e-10 in float64, 100 ε_mach (about 1e-5) in float32
-        tolerance = max(1e-10, 100.0 * float(jnp.finfo(innovation.dtype).eps))
+        tolerance = max(1e-10, 100.0 * machine_epsilon)
         solver = lx.CG(rtol=tolerance, atol=tolerance, max_steps=1000)
-        # R⁻¹ as the preconditioner, structured where R is
-        preconditioner = lx.TaggedLinearOperator(gx.inv(obs_cov), _PSD)
+        # R⁻¹, structured where R is
+        obs_precision = gx.inv(obs_cov)
+        preconditioner = lx.TaggedLinearOperator(obs_precision, _PSD)
         options = {"preconditioner": preconditioner}
+
+    # --- solve and map back ---
     # λ = (H B Hᵀ + R)⁻¹ d
     solution = lx.linear_solve(
         dual_operator, innovation, solver=solver, options=options, throw=False
     )
     multiplier = solution.value
+    # Hᵀ λ
+    back_projected = vjp(multiplier)
     # δx̂ = B Hᵀ λ
-    increment = background_cov.mv(vjp(multiplier))
+    increment = background_cov.mv(back_projected)
     num_steps = solution.stats.get("num_steps", jnp.array(0))
     return DualSolution(
         value=increment,
@@ -159,11 +189,11 @@ def dual_solve(
 
 
 def incremental_dual_solve(
-    forward: Callable[[Float[Array, " N"]], Float[Array, " M"]],
-    background_state: Float[Array, " N"],
+    forward: Callable[[Float[Array, " state"]], Float[Array, " obs"]],
+    background_state: Float[Array, " state"],
     background_cov: lx.AbstractLinearOperator,
     obs_cov: lx.AbstractLinearOperator,
-    observation: Float[Array, " M"],
+    observation: Float[Array, " obs"],
     *,
     num_outer: int = 5,
     solver: lx.AbstractLinearSolver | None = None,
@@ -219,29 +249,43 @@ def incremental_dual_solve(
         ... )
         >>> bool(jnp.allclose(solution.value, 1.0))
         True
+
+        At least one outer iteration:
+
+        >>> incremental_dual_solve(
+        ...     lambda x: x, jnp.zeros(1), eye(1), eye(1), jnp.ones(1), num_outer=0
+        ... )  # doctest: +IGNORE_EXCEPTION_DETAIL
+        Traceback (most recent call last):
+        ...
+        ValidationError: 'num_outer' must be a positive integer, got 0
     """
     if isinstance(num_outer, bool) or not isinstance(num_outer, int) or num_outer < 1:
         msg = f"'num_outer' must be a positive integer, got {num_outer!r}"
         raise ValidationError(msg)
 
-    def outer(state: Float[Array, " N"]) -> DualSolution:
+    def outer(state: Float[Array, " state"]) -> DualSolution:
         # H(xₖ) and δx ↦ Hₖ δx
         predicted, jvp = jax.linearize(forward, state)
         # δy ↦ Hₖᵀ δy
         transpose = jax.linear_transpose(jvp, state)
 
-        def vjp(cotangent: Float[Array, " M"]) -> Float[Array, " N"]:
-            return transpose(cotangent)[0]
+        def vjp(cotangent: Float[Array, " obs"]) -> Float[Array, " state"]:
+            # linear_transpose returns a tuple, one cotangent per primal input
+            (back_projected,) = transpose(cotangent)
+            return back_projected
 
+        # xₖ − x_b
+        departure = state - background_state
+        # Hₖ (xₖ − x_b)
+        linear_departure = jvp(departure)
         # dₖ = y − H(xₖ) + Hₖ (xₖ − x_b)
-        innovation = observation - predicted + jvp(state - background_state)
+        innovation = observation - predicted + linear_departure
         solution = dual_solve(
             jvp, vjp, background_cov, obs_cov, innovation, solver=solver
         )
         # xₖ₊₁ = x_b + δx̂
-        return eqx.tree_at(
-            lambda current: current.value, solution, background_state + solution.value
-        )
+        analysis = background_state + solution.value
+        return eqx.tree_at(lambda current: current.value, solution, analysis)
 
     solution = outer(background_state)
     for _ in range(num_outer - 1):

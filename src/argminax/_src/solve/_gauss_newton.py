@@ -72,6 +72,15 @@ class GaussNewtonCG(optx.AbstractGaussNewton):
     ``ClassicalTrustRegion``). It is an optimistix least-squares solver, called
     through ``optx.least_squares``.
 
+    Algorithm:
+        1. Linearise the residuals at xₖ, giving v ↦ Jₖ v and its transpose.
+        2. Solve (Jₖᵀ Jₖ + λₖ I) δₖ = −Jₖᵀ r(xₖ) by CG on the normal equations,
+           stopping after ``max_cg_steps`` iterations at most.
+        3. Accept the step with α = 1 (Gauss–Newton, fixed λ) or let the
+           trust region adapt λₖ from the actual and predicted decrease.
+        4. Stop when the iterate and the cost change by less than
+           ``rtol`` and ``atol``.
+
     A capped CG returns its last iterate as the step (inexact Gauss–Newton);
     the CG tolerances bound how far that step is from the exact one, so set
     them below the accuracy the solve needs. With whitened residuals the prior
@@ -175,11 +184,15 @@ class GaussNewtonCG(optx.AbstractGaussNewton):
             raise ValidationError(msg)
         # the inner solve is tighter than the outer one, so CG error does not
         # set the outer accuracy
+        # rtol_CG = rtol / 10, atol_CG = atol / 10
         inner_rtol = rtol / 10 if cg_rtol is None else cg_rtol
         inner_atol = atol / 10 if cg_atol is None else cg_atol
-        linear_solver = _TruncatedNormalCG(
-            lx.Normal(lx.CG(rtol=inner_rtol, atol=inner_atol, max_steps=max_cg_steps))
+        conjugate_gradient = lx.CG(
+            rtol=inner_rtol, atol=inner_atol, max_steps=max_cg_steps
         )
+        # CG on Jᵀ J δ = −Jᵀ r, from J v and Jᵀ v alone
+        normal_equations = lx.Normal(conjugate_gradient)
+        linear_solver = _TruncatedNormalCG(normal_equations)
         self.rtol = rtol
         self.atol = atol
         self.norm = norm
@@ -188,9 +201,11 @@ class GaussNewtonCG(optx.AbstractGaussNewton):
             self.descent = optx.DampedNewtonDescent(linear_solver=linear_solver)
             self.search = optx.ClassicalTrustRegion()
         elif damping > 0:
-            # optimistix's damped step solves (JᵀJ + I / μ) δ = −Jᵀr; μ = 1 / λ
+            # optimistix's damped step solves (JᵀJ + I / μ) δ = −Jᵀr
             self.descent = optx.DampedNewtonDescent(linear_solver=linear_solver)
-            self.search = optx.LearningRate(1.0 / damping)
+            # μ = 1 / λ
+            step_size = 1.0 / damping
+            self.search = optx.LearningRate(step_size)
         else:
             self.descent = optx.NewtonDescent(linear_solver=linear_solver)
             self.search = optx.LearningRate(1.0)

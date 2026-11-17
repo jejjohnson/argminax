@@ -105,7 +105,7 @@ current).
 
 <!-- upstream -->
 
-Listed at jax 0.12.0.1, equinox 0.13.8, lineax 0.1.1, optimistix 0.1.0, gaussx 0.6.12.
+Listed at jax 0.12.0.1, equinox 0.13.8, lineax 0.1.1, optimistix 0.1.0, gaussx 0.6.13.
 
 ## Upstream: `jax`
 

@@ -109,29 +109,49 @@ class Reparametrised(eqx.Module):
 
     def forward(self, u: Float[Array, "*state"]) -> Float[Array, "*state"]:
         """Map the unconstrained u to the bounded state x = g(u)."""
+        offset = self._offset()
         if self.transform == "exp":
+            # exp(u)
+            growth = jnp.exp(u)
             # x = a + exp(u)
-            return self._offset() + jnp.exp(u)
+            return offset + growth
         if self.transform == "softplus":
+            # log(1 + exp(u))
+            growth = jax.nn.softplus(u)
             # x = a + log(1 + exp(u))
-            return self._offset() + jax.nn.softplus(u)
+            return offset + growth
         assert self.upper is not None
+        # b − a
+        width = self.upper - offset
+        # σ(u)
+        fraction = jax.nn.sigmoid(u)
         # x = a + (b − a) σ(u)
-        return self._offset() + (self.upper - self._offset()) * jax.nn.sigmoid(u)
+        return offset + width * fraction
 
     def inverse(self, x: Float[Array, "*state"]) -> Float[Array, "*state"]:
         """Map the bounded state x back to u = g⁻¹(x)."""
-        shifted = x - self._offset()
+        offset = self._offset()
+        # s = x − a
+        shifted = x - offset
         if self.transform == "exp":
             # u = log(x − a)
             return jnp.log(shifted)
         if self.transform == "softplus":
-            # u = log(exp(x − a) − 1) = s + log(1 − exp(−s)), stable for large s
-            return shifted + jnp.log(-jnp.expm1(-shifted))
+            # 1 − exp(−s), by expm1 so it keeps its digits for small s
+            complement = -jnp.expm1(-shifted)
+            # u = log(exp(s) − 1) = s + log(1 − exp(−s)), stable for large s
+            return shifted + jnp.log(complement)
         assert self.upper is not None
-        # u = logit((x − a)/(b − a))
-        fraction = shifted / (self.upper - self._offset())
-        return jnp.log(fraction) - jnp.log1p(-fraction)
+        # b − a
+        width = self.upper - offset
+        # p = (x − a)/(b − a)
+        fraction = shifted / width
+        # log p
+        log_fraction = jnp.log(fraction)
+        # log(1 − p)
+        log_complement = jnp.log1p(-fraction)
+        # u = logit(p) = log p − log(1 − p)
+        return log_fraction - log_complement
 
     def derivative(self, u: Float[Array, "*state"]) -> Float[Array, "*state"]:
         """Return g′(u), the diagonal of G = ∂x/∂u."""
@@ -142,9 +162,12 @@ class Reparametrised(eqx.Module):
             # g′(u) = σ(u)
             return jax.nn.sigmoid(u)
         assert self.upper is not None
-        # g′(u) = (b − a) σ(u) (1 − σ(u))
+        # b − a
+        width = self.upper - self._offset()
+        # σ(u)
         probability = jax.nn.sigmoid(u)
-        return (self.upper - self._offset()) * probability * (1.0 - probability)
+        # g′(u) = (b − a) σ(u) (1 − σ(u))
+        return width * probability * (1.0 - probability)
 
     def push_forward(self, posterior: Laplace) -> Laplace:
         """Linearise a posterior in u into one in x.
@@ -159,7 +182,25 @@ class Reparametrised(eqx.Module):
 
         Returns:
             The linearised posterior in x, with the same solver strategy.
+
+        Examples:
+            At û = 0 the softplus slope is g′(0) = ½, so Ĥₓ = 4 Ĥᵤ:
+
+            >>> import jax.numpy as jnp
+            >>> import lineax as lx
+            >>> from argminax.curvature import Laplace
+            >>> from argminax.solve import Reparametrised
+            >>> precision = lx.MatrixLinearOperator(
+            ...     jnp.eye(2), lx.positive_semidefinite_tag
+            ... )
+            >>> posterior = Laplace(jnp.zeros(2), precision)
+            >>> physical = Reparametrised("softplus").push_forward(posterior)
+            >>> bool(jnp.allclose(physical.mode, jnp.log(2.0)))
+            True
+            >>> bool(jnp.allclose(physical.precision.as_matrix(), 4.0 * jnp.eye(2)))
+            True
         """
+        # g′(û), the diagonal of G
         slope = self.derivative(posterior.mode)
 
         def physical_precision(
@@ -167,17 +208,20 @@ class Reparametrised(eqx.Module):
         ) -> Float[Array, "*state"]:
             # G⁻¹ v
             whitened = vector / slope
+            # Ĥᵤ G⁻¹ v
+            curved = posterior.precision.mv(whitened)
             # G⁻ᵀ Ĥᵤ G⁻¹ v
-            return posterior.precision.mv(whitened) / slope
+            return curved / slope
 
-        precision = lx.FunctionLinearOperator(
-            physical_precision, posterior.precision.in_structure(), _PSD
-        )
-        return Laplace(self.forward(posterior.mode), precision, posterior.solver)
+        structure = posterior.precision.in_structure()
+        precision = lx.FunctionLinearOperator(physical_precision, structure, _PSD)
+        # x̂ = g(û)
+        physical_mode = self.forward(posterior.mode)
+        return Laplace(physical_mode, precision, posterior.solver)
 
     def sample(
         self, posterior: Laplace, n: int, *, key: PRNGKeyArray
-    ) -> Float[Array, "n ..."]:
+    ) -> Float[Array, " member *state"]:
         """Draw from the posterior in u and map the draws to x = g(u).
 
         Exact for the Gaussian in u, and every draw respects the bound.
@@ -189,5 +233,29 @@ class Reparametrised(eqx.Module):
 
         Returns:
             The draws in x, shape (n, *x̂.shape).
+
+        Examples:
+            Every draw of a positive state stays positive, however wide the
+            posterior in u:
+
+            >>> import jax
+            >>> import jax.numpy as jnp
+            >>> import lineax as lx
+            >>> from argminax.curvature import Laplace
+            >>> from argminax.solve import Reparametrised
+            >>> precision = lx.MatrixLinearOperator(
+            ...     0.01 * jnp.eye(2), lx.positive_semidefinite_tag
+            ... )
+            >>> posterior = Laplace(jnp.zeros(2), precision)
+            >>> draws = Reparametrised("exp").sample(
+            ...     posterior, 100, key=jax.random.key(0)
+            ... )
+            >>> draws.shape
+            (100, 2)
+            >>> bool(jnp.all(draws > 0.0))
+            True
         """
-        return self.forward(posterior.sample(n, key=key))
+        # u⁽ᵉ⁾ ~ N(û, Ĥᵤ⁻¹)
+        unconstrained = posterior.sample(n, key=key)
+        # x⁽ᵉ⁾ = g(u⁽ᵉ⁾)
+        return self.forward(unconstrained)

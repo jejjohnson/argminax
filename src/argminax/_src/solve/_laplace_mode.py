@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, cast
 
+import einx
 import equinox as eqx
 import gaussx as gx
 import jax
@@ -48,10 +49,13 @@ _PSD = frozenset({lx.symmetric_tag, lx.positive_semidefinite_tag})
 
 def _floored_tolerance(tol: float, dtype: Any) -> float:
     """tol, floored at 64 machine epsilons: below that float32 never converges."""
-    return max(tol, 64.0 * float(jnp.finfo(dtype).eps))
+    # a host constant, so the floor also works under jit
+    epsilon = float(jnp.finfo(dtype).eps)
+    return max(tol, 64.0 * epsilon)
 
 
 def _validate(max_iter: int, tol: float, damping: float) -> None:
+    """Check the loop settings every entry point shares."""
     if isinstance(max_iter, bool) or not isinstance(max_iter, int) or max_iter < 1:
         msg = f"'max_iter' must be a positive integer, got {max_iter!r}"
         raise ValidationError(msg)
@@ -66,35 +70,46 @@ def _validate(max_iter: int, tol: float, damping: float) -> None:
 def _stop_gradient(tree: Any) -> Any:
     """Stop gradients through the inexact arrays of a pytree."""
     dynamic, static = eqx.partition(tree, eqx.is_inexact_array)
-    return eqx.combine(jax.lax.stop_gradient(dynamic), static)
+    frozen = jax.lax.stop_gradient(dynamic)
+    return eqx.combine(frozen, static)
+
+
+def _sup_norm(vector: Float[Array, " state"]) -> Float[Array, ""]:
+    """‖v‖_∞, zero for an empty vector."""
+    magnitude = jnp.abs(vector)
+    # einx has no initial value, and an empty state must give 0, not an error
+    return jnp.max(magnitude, initial=0.0)
 
 
 def _site_derivatives(
-    log_likelihood: Callable[[Float[Array, " N"]], Float[Array, " N"]],
-    state: Float[Array, " N"],
-) -> tuple[Float[Array, " N"], Float[Array, " N"]]:
+    log_likelihood: Callable[[Float[Array, " state"]], Float[Array, " state"]],
+    state: Float[Array, " state"],
+) -> tuple[Float[Array, " state"], Float[Array, " state"]]:
     """g and h = diag(∇² log p) of a likelihood that factorises over sites.
 
     Site n depends on fₙ alone, so the Hessian of ∑ₙ log pₙ is diagonal and
     its product with a vector of ones is that diagonal.
     """
 
-    def total(latent: Float[Array, " N"]) -> Float[Array, ""]:
-        return jnp.sum(log_likelihood(latent))
+    def total(latent: Float[Array, " state"]) -> Float[Array, ""]:
+        site_log_densities = log_likelihood(latent)
+        # ∑ₙ log pₙ
+        return einx.sum("state ->", site_log_densities)
 
     gradient_fn = jax.grad(total)
     # g = ∇ ∑ₙ log pₙ
     gradient = gradient_fn(state)
+    ones = jnp.ones_like(state)
     # h = ∇²(∑ₙ log pₙ) 1, the diagonal for a factorised likelihood
-    _, curvature = jax.jvp(gradient_fn, (state,), (jnp.ones_like(state),))
+    _, curvature = jax.jvp(gradient_fn, (state,), (ones,))
     return gradient, curvature
 
 
 def _sites(
-    log_likelihood: Callable[[Float[Array, " N"]], Float[Array, " N"]],
-    state: Float[Array, " N"],
+    log_likelihood: Callable[[Float[Array, " state"]], Float[Array, " state"]],
+    state: Float[Array, " state"],
     precision_floor: float,
-) -> tuple[Float[Array, " N"], Float[Array, " N"]]:
+) -> tuple[Float[Array, " state"], Float[Array, " state"]]:
     """The Newton site naturals (λ, Λ) at f, by `gaussx.newton_update`."""
     gradient, curvature = _site_derivatives(log_likelihood, state)
     # Λ = max(−h, floor), λ = g + Λ ⊙ f
@@ -104,10 +119,15 @@ def _sites(
     return information, precision
 
 
+def _start_at_estimate(_: Any, start: Array) -> Array:
+    """custom_root's forward solve: the loop has converged, so keep its estimate."""
+    return start
+
+
 def _implicit_fixed_point(
-    update: Callable[[Float[Array, " N"]], Float[Array, " N"]],
-    estimate: Float[Array, " N"],
-) -> Float[Array, " N"]:
+    update: Callable[[Float[Array, " state"]], Float[Array, " state"]],
+    estimate: Float[Array, " state"],
+) -> Float[Array, " state"]:
     """Attach implicit tangents to a fixed point f̂ = Φ(f̂).
 
         ∂f̂/∂θ = (I − ∂Φ/∂f)⁻¹ ∂Φ/∂θ
@@ -116,19 +136,19 @@ def _implicit_fixed_point(
     tangent solve is a dense LU on the N × N Jacobian (N products with it).
     """
 
-    def root(state: Float[Array, " N"]) -> Float[Array, " N"]:
+    def root(state: Float[Array, " state"]) -> Float[Array, " state"]:
+        # Φ(f) − f
         return update(state) - state
 
-    def tangent_solve(matvec: Callable, vector: Float[Array, " N"]) -> Array:
+    def tangent_solve(matvec: Callable, vector: Float[Array, " state"]) -> Array:
         structure = jax.eval_shape(lambda: vector)
         operator = lx.FunctionLinearOperator(matvec, structure)
-        return lx.linear_solve(
-            operator, vector, lx.AutoLinearSolver(well_posed=True)
-        ).value
+        solver = lx.AutoLinearSolver(well_posed=True)
+        solution = lx.linear_solve(operator, vector, solver)
+        return solution.value
 
-    return jax.lax.custom_root(
-        root, jax.lax.stop_gradient(estimate), lambda _, start: start, tangent_solve
-    )
+    frozen_estimate = jax.lax.stop_gradient(estimate)
+    return jax.lax.custom_root(root, frozen_estimate, _start_at_estimate, tangent_solve)
 
 
 # ---------------------------------------------------------------------------
@@ -155,7 +175,7 @@ class LaplaceModeResult(eqx.Module):
             assume it.
     """
 
-    mode: Float[Array, " N"]
+    mode: Float[Array, " state"]
     hessian: lx.AbstractLinearOperator
     factor: Any
     log_marginal: Float[Array, ""]
@@ -172,6 +192,7 @@ class LaplaceModeResult(eqx.Module):
 
 
 def _require_gmrf_step() -> None:
+    """Raise `MissingExtraError` unless gaussx exports its GMRF Laplace step."""
     if not hasattr(gx, "laplace_model"):
         msg = (
             "laplace_mode's precision form needs the 'numpyro' extra, for "
@@ -181,17 +202,18 @@ def _require_gmrf_step() -> None:
 
 
 def _damped_newton(
-    target: Callable[[Float[Array, " N"]], Float[Array, " N"]],
-    start: Float[Array, " N"],
+    target: Callable[[Float[Array, " state"]], Float[Array, " state"]],
+    start: Float[Array, " state"],
     max_iter: int,
     tol: float,
     damping: float,
-) -> tuple[Float[Array, " N"], Int[Array, ""], Bool[Array, ""]]:
+) -> tuple[Float[Array, " state"], Int[Array, ""], Bool[Array, ""]]:
     """x ← x + α (x̃ − x) until ‖Δx‖_∞ ≤ tol (1 + ‖x‖_∞), or ``max_iter`` steps."""
 
-    def threshold(state: Float[Array, " N"]) -> Float[Array, ""]:
+    def threshold(state: Float[Array, " state"]) -> Float[Array, ""]:
+        size = _sup_norm(state)
         # tol (1 + ‖x‖_∞)
-        return tol * (1.0 + jnp.max(jnp.abs(state), initial=0.0))
+        return tol * (1.0 + size)
 
     def keep_going(carry: tuple[Array, Array, Array]) -> Array:
         state, iteration, step_norm = carry
@@ -199,18 +221,23 @@ def _damped_newton(
 
     def step(carry: tuple[Array, Array, Array]) -> tuple[Array, Array, Array]:
         state, iteration, _ = carry
+        newton_state = target(state)
         # x⁽ʲ⁺¹⁾ = x⁽ʲ⁾ + α (x̃ − x⁽ʲ⁾)
-        next_state = state + damping * (target(state) - state)
+        next_state = state + damping * (newton_state - state)
         # ‖Δx‖_∞
-        step_norm = jnp.max(jnp.abs(next_state - state), initial=0.0)
+        step_norm = _sup_norm(next_state - state)
         return next_state, iteration + 1, step_norm
 
-    initial = (start, jnp.asarray(0), jnp.asarray(jnp.inf, dtype=start.dtype))
+    initial_norm = jnp.asarray(jnp.inf, dtype=start.dtype)
+    initial = (start, jnp.asarray(0), initial_norm)
     state, n_iter, step_norm = jax.lax.while_loop(keep_going, step, initial)
-    return state, n_iter, step_norm <= threshold(state)
+    converged = step_norm <= threshold(state)
+    return state, n_iter, converged
 
 
-def _implicit_mode(model: Any, estimate: Float[Array, " N"], factor: Any) -> Array:
+def _implicit_mode(
+    model: Any, estimate: Float[Array, " state"], factor: Any
+) -> Float[Array, " state"]:
     """Attach implicit tangents to the mode: ∂x̂/∂θ = Λ_x|y⁻¹ ∂θ(−∇𝒥), one solve.
 
     The root is −∇𝒥(x), or with a hard constraint −P ∇𝒥(P x) − Π_V x
@@ -222,6 +249,7 @@ def _implicit_mode(model: Any, estimate: Float[Array, " N"], factor: Any) -> Arr
 
     def root(state: Array) -> Array:
         if not constrained:
+            # −∇𝒥(x)
             return model.grad(state)
         # P x = x − Π_V x
         inner = state - model.null_component(state)
@@ -233,8 +261,11 @@ def _implicit_mode(model: Any, estimate: Float[Array, " N"], factor: Any) -> Arr
     def negative_inverse(_: Any, vector: Array) -> Array:
         # Π_V b
         null = frozen.null_component(vector)
+        # Λ_x|y⁻¹ (b − Π_V b)
+        unconstrained = factor.solve(vector - null)
         # krige(Λ_x|y⁻¹ (b − Π_V b))
-        inner = frozen.krige(factor, factor.solve(vector - null))[0]
+        inner = frozen.krige(factor, unconstrained)[0]
+        # −(P Λ_x|y P + Π_V)⁻¹ b
         return -(inner + null)
 
     def tangent_solve(matvec: Callable, vector: Array) -> Array:
@@ -242,9 +273,8 @@ def _implicit_mode(model: Any, estimate: Float[Array, " N"], factor: Any) -> Arr
             matvec, vector, negative_inverse, symmetric=True
         )
 
-    return jax.lax.custom_root(
-        root, jax.lax.stop_gradient(estimate), lambda _, start: start, tangent_solve
-    )
+    frozen_estimate = jax.lax.stop_gradient(estimate)
+    return jax.lax.custom_root(root, frozen_estimate, _start_at_estimate, tangent_solve)
 
 
 def laplace_mode(
@@ -252,8 +282,8 @@ def laplace_mode(
     likelihood: Any,
     *,
     projector: lx.AbstractLinearOperator | None = None,
-    offset: Float[ArrayLike, " M"] | Float[ArrayLike, ""] | None = None,
-    init: Float[ArrayLike, " N"] | None = None,
+    offset: Float[ArrayLike, " obs"] | Float[ArrayLike, ""] | None = None,
+    init: Float[ArrayLike, " state"] | None = None,
     max_iter: int = 50,
     tol: float = 1e-8,
     damping: float = 1.0,
@@ -316,29 +346,46 @@ def laplace_mode(
         (True, (3,))
         >>> fit.posterior.covariance().mv(jnp.ones(3)).shape
         (3,)
+
+        Damping slows the loop but does not move the mode:
+
+        >>> damped = laplace_mode(prior, counts, damping=0.5)
+        >>> bool(jnp.allclose(damped.mode, fit.mode, atol=1e-6))
+        True
+
+        A damping outside (0, 1] is rejected before any work is done:
+
+        >>> laplace_mode(prior, counts, damping=0.0)
+        ... # doctest: +IGNORE_EXCEPTION_DETAIL
+        Traceback (most recent call last):
+        ...
+        ValidationError: 'damping' must lie in (0, 1], got 0.0
     """
     _validate(max_iter, tol, damping)
     _require_gmrf_step()
+
+    # --- the model and its start ---
     model = gx.laplace_model(prior, likelihood, projector=projector, offset=offset)
     dtype = prior.loc.dtype
     size = prior.event_shape[0]
     start = jnp.zeros(size, dtype) if init is None else jnp.asarray(init, dtype)
+    # Π_V x⁽⁰⁾
+    start_null = model.null_component(start)
     # x⁽⁰⁾ ← x⁽⁰⁾ − Π_V x⁽⁰⁾
-    start = start - model.null_component(start)
+    start = start - start_null
 
     # --- the loop, with gradients stopped ---
     frozen_model = _stop_gradient(model)
+    frozen_start = jax.lax.stop_gradient(start)
+    floored_tol = _floored_tolerance(tol, dtype)
     estimate, n_iter, converged = _damped_newton(
-        frozen_model.newton,
-        jax.lax.stop_gradient(start),
-        max_iter,
-        _floored_tolerance(tol, dtype),
-        damping,
+        frozen_model.newton, frozen_start, max_iter, floored_tol, damping
     )
 
     # --- implicit tangents, with the factor at the mode ---
+    frozen_prior = _stop_gradient(prior)
     frozen_fit = gx.laplace_result(
-        frozen_model, _stop_gradient(prior), estimate, n_iter, converged
+        frozen_model, frozen_prior, estimate, n_iter, converged
     )
     mode = _implicit_mode(model, estimate, frozen_fit.factor)
 
@@ -371,9 +418,9 @@ class SiteLaplaceResult(eqx.Module):
         converged: Whether the last step met the tolerance.
     """
 
-    mode: Float[Array, " N"]
-    site_information: Float[Array, " N"]
-    site_precision: Float[Array, " N"]
+    mode: Float[Array, " state"]
+    site_information: Float[Array, " state"]
+    site_precision: Float[Array, " state"]
     n_iter: Int[Array, ""]
     converged: Bool[Array, ""]
 
@@ -394,13 +441,14 @@ class CovarianceLaplaceResult(eqx.Module):
             ∑ₙ log p(yₙ ∣ f̂ₙ) − ½ (f̂ − μ)ᵀ K⁻¹ (f̂ − μ) − ½ log |I + √Λ K √Λ|.
         n_iter: Iterations taken.
         converged: Whether the last step met the tolerance.
+        prior_cov: The prior covariance K the fit was made with.
     """
 
-    mode: Float[Array, " N"]
-    site_information: Float[Array, " N"]
-    site_precision: Float[Array, " N"]
-    mean: Float[Array, " N"]
-    variance: Float[Array, " N"]
+    mode: Float[Array, " state"]
+    site_information: Float[Array, " state"]
+    site_precision: Float[Array, " state"]
+    mean: Float[Array, " state"]
+    variance: Float[Array, " state"]
     log_marginal: Float[Array, ""]
     n_iter: Int[Array, ""]
     converged: Bool[Array, ""]
@@ -409,18 +457,22 @@ class CovarianceLaplaceResult(eqx.Module):
     @property
     def posterior(self) -> Laplace:
         """N(f̂, V) as an `argminax.curvature.Laplace`, with precision K⁻¹ + Λ."""
+        # K⁻¹
         inverse = gx.inv(self.prior_cov)
+        # diag(Λ)
         sites = lx.DiagonalLinearOperator(self.site_precision)
-        precision = lx.TaggedLinearOperator(inverse + sites, _PSD)
+        # K⁻¹ + Λ
+        untagged = inverse + sites
+        precision = lx.TaggedLinearOperator(untagged, _PSD)
         return Laplace(self.mode, precision)
 
 
 def _site_loop(
-    update: Callable[[Float[Array, " N"], Any], tuple[Array, Any]],
-    start: tuple[Float[Array, " N"], Any],
+    update: Callable[[Float[Array, " state"], Any], tuple[Array, Any]],
+    start: tuple[Float[Array, " state"], Any],
     max_iter: int,
     tol: float,
-) -> tuple[Float[Array, " N"], Any, Int[Array, ""], Bool[Array, ""]]:
+) -> tuple[Float[Array, " state"], Any, Int[Array, ""], Bool[Array, ""]]:
     """Iterate (f, carry) ← update(f, carry) until max |Δf| < tol."""
 
     def keep_going(state: tuple[Array, Any, Array, Array]) -> Array:
@@ -431,19 +483,21 @@ def _site_loop(
         latent, carry, iteration, _ = state
         next_latent, next_carry = update(latent, carry)
         # max |Δf|
-        step_norm = jnp.max(jnp.abs(next_latent - latent), initial=0.0)
+        step_norm = _sup_norm(next_latent - latent)
         return next_latent, next_carry, iteration + 1, step_norm
 
     latent, carry = start
-    initial = (latent, carry, jnp.asarray(0), jnp.asarray(jnp.inf, latent.dtype))
+    initial_norm = jnp.asarray(jnp.inf, latent.dtype)
+    initial = (latent, carry, jnp.asarray(0), initial_norm)
     latent, carry, n_iter, step_norm = jax.lax.while_loop(keep_going, step, initial)
-    return latent, carry, n_iter, step_norm < tol
+    converged = step_norm < tol
+    return latent, carry, n_iter, converged
 
 
 def laplace_mode_covariance(
     prior_cov: lx.AbstractLinearOperator,
-    prior_mean: Float[Array, " N"],
-    log_likelihood: Callable[[Float[Array, " N"]], Float[Array, " N"]],
+    prior_mean: Float[Array, " state"],
+    log_likelihood: Callable[[Float[Array, " state"]], Float[Array, " state"]],
     *,
     max_iter: int = 20,
     tol: float = 1e-6,
@@ -503,6 +557,21 @@ def laplace_mode_covariance(
         >>> bool(fit.converged), bool(jnp.allclose(fit.mode, fit.mean, atol=1e-5))
         (True, True)
 
+        The marginal variances are the diagonal of the Gaussian at the mode:
+
+        >>> covariance = fit.posterior.covariance().as_matrix()
+        >>> bool(jnp.allclose(jnp.diag(covariance), fit.variance))
+        True
+
+        A prior covariance without the positive semidefinite tag is rejected:
+
+        >>> untagged = lx.MatrixLinearOperator(jnp.eye(3))
+        >>> laplace_mode_covariance(untagged, jnp.zeros(3), log_likelihood)
+        ... # doctest: +IGNORE_EXCEPTION_DETAIL
+        Traceback (most recent call last):
+        ...
+        ValidationError: 'prior_cov' must be tagged positive semidefinite
+
     References:
         Rasmussen, C. E. & Williams, C. K. I. (2006). Gaussian Processes for
         Machine Learning, section 3.4.
@@ -518,11 +587,11 @@ def laplace_mode_covariance(
             latent, prior_cov, prior_mean, log_likelihood, precision_floor
         )
 
+    # --- the loop, with gradients stopped ---
     # the loop runs with every input frozen, closed-over arrays included, so
     # gradients come only from the implicit fixed point below
-    frozen_likelihood = _stop_gradient(
-        eqx.filter_closure_convert(log_likelihood, prior_mean)
-    )
+    closed_likelihood = eqx.filter_closure_convert(log_likelihood, prior_mean)
+    frozen_likelihood = _stop_gradient(closed_likelihood)
     frozen_cov, frozen_mean = _stop_gradient((prior_cov, prior_mean))
 
     def update(latent: Array, carry: None) -> tuple[Array, None]:
@@ -530,13 +599,12 @@ def laplace_mode_covariance(
             latent, frozen_cov, frozen_mean, frozen_likelihood, precision_floor
         )
         # f ← (1 − α) f + α f̃
-        return (1.0 - damping) * latent + damping * target, carry
+        damped = (1.0 - damping) * latent + damping * target
+        return damped, carry
 
+    floored_tol = _floored_tolerance(tol, prior_mean.dtype)
     estimate, _, n_iter, converged = _site_loop(
-        update,
-        (frozen_mean, None),
-        max_iter,
-        _floored_tolerance(tol, prior_mean.dtype),
+        update, (frozen_mean, None), max_iter, floored_tol
     )
     mode = _implicit_fixed_point(fixed_point, estimate)
 
@@ -549,11 +617,19 @@ def laplace_mode_covariance(
     variance = _marginal_variance(prior_cov, regularised)
     # f̂ − μ
     residual = mode - prior_mean
+    # K⁻¹ (f̂ − μ)
+    whitened = gx.solve(prior_cov, residual)
     # ½ (f̂ − μ)ᵀ K⁻¹ (f̂ − μ)
-    quadratic = 0.5 * jnp.vdot(residual, gx.solve(prior_cov, residual))
-    # log |I + √Λ K √Λ| = log |K + Λ⁻¹| + ∑ log Λ
-    log_det = gx.logdet(regularised) + jnp.sum(jnp.log(precision))
-    log_marginal = jnp.sum(log_likelihood(mode)) - quadratic - 0.5 * log_det
+    quadratic = 0.5 * einx.dot("state, state ->", residual, whitened)
+    # ∑ₙ log Λₙ
+    log_site_precision = einx.sum("state ->", jnp.log(precision))
+    # log |I + √Λ K √Λ| = log |K + Λ⁻¹| + ∑ₙ log Λₙ
+    log_det = gx.logdet(regularised) + log_site_precision
+    site_log_densities = log_likelihood(mode)
+    # ∑ₙ log p(yₙ ∣ f̂ₙ)
+    log_density = einx.sum("state ->", site_log_densities)
+    # ∑ₙ log p(yₙ ∣ f̂ₙ) − ½ (f̂ − μ)ᵀ K⁻¹ (f̂ − μ) − ½ log |I + √Λ K √Λ|
+    log_marginal = log_density - quadratic - 0.5 * log_det
     return CovarianceLaplaceResult(
         mode=mode,
         site_information=information,
@@ -568,34 +644,39 @@ def laplace_mode_covariance(
 
 
 def _regularised(
-    prior_cov: lx.AbstractLinearOperator, precision: Float[Array, " N"]
+    prior_cov: lx.AbstractLinearOperator, precision: Float[Array, " state"]
 ) -> lx.AbstractLinearOperator:
     """K + Λ⁻¹, tagged positive semidefinite."""
-    return lx.TaggedLinearOperator(
-        prior_cov + lx.DiagonalLinearOperator(1.0 / precision), _PSD
-    )
+    # Λ⁻¹
+    site_variance = lx.DiagonalLinearOperator(1.0 / precision)
+    # K + Λ⁻¹
+    untagged = prior_cov + site_variance
+    return lx.TaggedLinearOperator(untagged, _PSD)
 
 
 def _covariance_update(
-    latent: Float[Array, " N"],
+    latent: Float[Array, " state"],
     prior_cov: lx.AbstractLinearOperator,
-    prior_mean: Float[Array, " N"],
-    log_likelihood: Callable[[Float[Array, " N"]], Float[Array, " N"]],
+    prior_mean: Float[Array, " state"],
+    log_likelihood: Callable[[Float[Array, " state"]], Float[Array, " state"]],
     precision_floor: float,
-) -> Float[Array, " N"]:
+) -> Float[Array, " state"]:
     """One undamped update f ↦ μ + K (K + Λ⁻¹)⁻¹ (λ/Λ − μ), the sites at f."""
     information, precision = _sites(log_likelihood, latent, precision_floor)
     # ỹ = λ / Λ
     pseudo_target = information / precision
+    regularised = _regularised(prior_cov, precision)
     # (K + Λ⁻¹)⁻¹ (ỹ − μ)
-    weights = gx.solve(_regularised(prior_cov, precision), pseudo_target - prior_mean)
+    weights = gx.solve(regularised, pseudo_target - prior_mean)
+    # K (K + Λ⁻¹)⁻¹ (ỹ − μ)
+    shift = prior_cov.mv(weights)
     # μ + K (K + Λ⁻¹)⁻¹ (ỹ − μ)
-    return prior_mean + prior_cov.mv(weights)
+    return prior_mean + shift
 
 
 def _marginal_variance(
     prior_cov: lx.AbstractLinearOperator, regularised: lx.AbstractLinearOperator
-) -> Float[Array, " N"]:
+) -> Float[Array, " state"]:
     """diag(V) = diag(K) − diag(K (K + Λ⁻¹)⁻¹ K), one solve per site."""
     structure = prior_cov.in_structure()
     identity = jnp.eye(structure.shape[0], dtype=structure.dtype)
@@ -603,18 +684,23 @@ def _marginal_variance(
     def column_term(basis: Array) -> Array:
         # kₙ = K eₙ
         column = prior_cov.mv(basis)
+        # (K + Λ⁻¹)⁻¹ kₙ
+        solved = gx.solve(regularised, column)
         # kₙᵀ (K + Λ⁻¹)⁻¹ kₙ
-        return jnp.vdot(column, gx.solve(regularised, column))
+        return einx.dot("state, state ->", column, solved)
 
-    return gx.diag(prior_cov) - jax.vmap(column_term)(identity)
+    # diag(K (K + Λ⁻¹)⁻¹ K)
+    reduction = jax.vmap(column_term)(identity)
+    # diag(K) − diag(K (K + Λ⁻¹)⁻¹ K)
+    return gx.diag(prior_cov) - reduction
 
 
 def laplace_mode_sites(
     posterior_mean: Callable[
-        [Float[Array, " N"], Float[Array, " N"]], Float[Array, " N"]
+        [Float[Array, " state"], Float[Array, " state"]], Float[Array, " state"]
     ],
-    log_likelihood: Callable[[Float[Array, " N"]], Float[Array, " N"]],
-    prior_mean: Float[Array, " N"],
+    log_likelihood: Callable[[Float[Array, " state"]], Float[Array, " state"]],
+    prior_mean: Float[Array, " state"],
     *,
     max_iter: int = 20,
     tol: float = 1e-6,
@@ -672,51 +758,82 @@ def laplace_mode_sites(
         >>> fit = laplace_mode_sites(posterior_mean, log_likelihood, jnp.zeros(2))
         >>> bool(fit.converged), fit.mode.shape
         (True, (2,))
+
+        At the mode, the posterior-mean map returns the mode itself:
+
+        >>> refit = posterior_mean(fit.site_information, fit.site_precision)
+        >>> bool(jnp.allclose(refit, fit.mode, atol=1e-5))
+        True
+
+        A non-positive iteration budget is rejected:
+
+        >>> laplace_mode_sites(
+        ...     posterior_mean, log_likelihood, jnp.zeros(2), max_iter=0
+        ... )
+        ... # doctest: +IGNORE_EXCEPTION_DETAIL
+        Traceback (most recent call last):
+        ...
+        ValidationError: 'max_iter' must be a positive integer, got 0
     """
     _validate(max_iter, tol, damping)
     prior_mean = jnp.asarray(prior_mean)
 
     def fixed_point(latent: Array) -> Array:
         information, precision = _sites(log_likelihood, latent, precision_floor)
-        return posterior_mean(information, jnp.maximum(precision, precision_floor))
+        # Λ ← max(Λ, floor)
+        floored_precision = jnp.maximum(precision, precision_floor)
+        # m(λ, Λ)
+        return posterior_mean(information, floored_precision)
 
+    # --- the loop, with gradients stopped ---
     # the loop runs with every input frozen, closed-over arrays included, so
     # gradients come only from the implicit fixed point below
-    frozen_mean = _stop_gradient(
-        eqx.filter_closure_convert(posterior_mean, prior_mean, prior_mean)
-    )
-    frozen_likelihood = _stop_gradient(
-        eqx.filter_closure_convert(log_likelihood, prior_mean)
-    )
+    closed_mean = eqx.filter_closure_convert(posterior_mean, prior_mean, prior_mean)
+    frozen_mean = _stop_gradient(closed_mean)
+    closed_likelihood = eqx.filter_closure_convert(log_likelihood, prior_mean)
+    frozen_likelihood = _stop_gradient(closed_likelihood)
 
     def update(latent: Array, naturals: tuple[Array, Array]) -> tuple[Array, Any]:
+        current_information, current_precision = naturals
         target_information, target_precision = _sites(
             frozen_likelihood, latent, precision_floor
         )
+        # (λ, Λ) ← (1 − α) (λ, Λ) + α (λ̃, Λ̃)
         information, precision = gx.damped_natural_update(
-            naturals[0], naturals[1], target_information, target_precision, lr=damping
+            current_information,
+            current_precision,
+            target_information,
+            target_precision,
+            lr=damping,
         )
         # diagonal sites in, diagonal sites out (gaussx types the operator form too)
-        precision = jnp.maximum(cast(Array, precision), precision_floor)
-        return frozen_mean(information, precision), (information, precision)
+        diagonal_precision = cast(Array, precision)
+        # Λ ← max(Λ, floor)
+        floored_precision = jnp.maximum(diagonal_precision, precision_floor)
+        # f ← m(λ, Λ)
+        next_latent = frozen_mean(information, floored_precision)
+        return next_latent, (information, floored_precision)
 
     start_mean = jax.lax.stop_gradient(prior_mean)
+    # λ⁽⁰⁾ = floor μ, Λ⁽⁰⁾ = floor
     start_sites = (
         start_mean * precision_floor,
         jnp.full_like(start_mean, precision_floor),
     )
+    floored_tol = _floored_tolerance(tol, prior_mean.dtype)
     estimate, _, n_iter, converged = _site_loop(
-        update,
-        (start_mean, start_sites),
-        max_iter,
-        _floored_tolerance(tol, prior_mean.dtype),
+        update, (start_mean, start_sites), max_iter, floored_tol
     )
     mode = _implicit_fixed_point(fixed_point, estimate)
+
+    # --- the undamped sites at f̂ ---
     information, precision = _sites(log_likelihood, mode, precision_floor)
+    # Λ ← max(Λ, floor)
+    floored_precision = jnp.maximum(precision, precision_floor)
     return SiteLaplaceResult(
         mode=mode,
         site_information=information,
-        site_precision=jnp.maximum(precision, precision_floor),
+        site_precision=floored_precision,
         n_iter=n_iter,
         converged=converged,
     )
