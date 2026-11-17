@@ -40,6 +40,9 @@ matfree = ["matfree>=0.6.2"]
 # The GMRF priors of laplace_mode's precision form are numpyro distributions in
 # gaussx, which exports them (and its Laplace step) only when numpyro is installed.
 numpyro = ["numpyro>=0.21"]
+# The Bayesian learning rule transforms of argminax.blr are optax
+# GradientTransformations; optax is imported when one is built.
+optax = ["optax>=0.2.4"]
 
 [project.urls]
 Repository = "https://github.com/jejjohnson/argminax"
@@ -60,6 +63,8 @@ test = [
     "hypothesis>=6.100",
     # laplace_mode's precision form, tested against gaussx's GMRF priors
     "numpyro>=0.21",
+    # argminax.blr builds optax transforms
+    "optax>=0.2.4",
 ]
 lint = [
     "ruff>=0.15.22",
@@ -117,7 +122,7 @@ ignore = ["E402", "E721", "E731", "E741", "F722"]
 # Docstrings and comments carry Unicode maths (eman-style-math, "Maths
 # notation" in AGENTS.md), so the maths glyphs that look like ASCII are allowed,
 # and the en dash of "Gauss–Newton".
-allowed-confusables = ["−", "–", "×", "∗", "∣", "α", "γ", "ι", "ν", "ο", "ρ", "σ", "υ", "𝒩", "ℝ", "′", "𝒥", "ℰ", "𝕀"]
+allowed-confusables = ["−", "–", "×", "∗", "∣", "α", "γ", "ι", "ν", "ο", "ρ", "σ", "υ", "𝒩", "ℝ", "′", "𝒥", "ℰ", "𝕀", "𝒟"]
 
 [tool.ruff.lint.isort]
 combine-as-imports = true

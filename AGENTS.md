@@ -6,7 +6,7 @@ The house style (Python, maths notation, prose, pseudocode, reports) comes from 
 
 ## What this repo is
 
-argminax is the GeoStack's optimisation library with uncertainty at the minimum. It finds x̂ = argmin J(x), then says how sharp that minimum is (the posterior covariance Ŝ = (KᵀSε⁻¹K + Sₐ⁻¹)⁻¹, the averaging kernel A = I − ŜSₐ⁻¹, the degrees of freedom for signal) and how x̂ depends on what went in. It extends optimistix as gaussx extends lineax: its solvers are optimistix solvers and its adjoints are optimistix adjoints, so `optx.minimise` and `optx.least_squares` keep working.
+argminax is the GeoStack's optimisation library with uncertainty at the minimum. It finds x̂ = argmin J(x), then says how sharp that minimum is (the posterior covariance Ŝ = (KᵀSε⁻¹K + Sₐ⁻¹)⁻¹, the averaging kernel A = I − ŜSₐ⁻¹, the degrees of freedom for signal) and how x̂ depends on what went in. It extends optimistix as gaussx extends lineax: its solvers are optimistix solvers and its adjoints are optimistix adjoints, so `optx.minimise` and `optx.least_squares` keep working. It also extends optax: `argminax.blr` holds the Bayesian learning rule as optax transforms that carry the same Gaussian during training (Wave 5, [#58](https://github.com/jejjohnson/argminax/issues/58)).
 
 The design lives in the geostack repository, in [`docs/design/libraries/argminax.md`](https://github.com/jejjohnson/geostack/blob/main/docs/design/libraries/argminax.md) and [`argminax_details.md`](https://github.com/jejjohnson/geostack/blob/main/docs/design/libraries/argminax_details.md). The backlog is five wave epics, [#8](https://github.com/jejjohnson/argminax/issues/8) to [#12](https://github.com/jejjohnson/argminax/issues/12), under [geostack#134](https://github.com/jejjohnson/geostack/issues/134). The issues are newer than the design page where the two disagree, so read the live issue before starting work.
 
@@ -21,9 +21,10 @@ It is one package, `src/argminax/`. Logic lives in `argminax._src.<module>`, and
 | `adjoint` | `KStep` and `OneStep` adjoints for a minimiser stopped early; `to_optimistix_adjoint` | Wave 1 (#15, #16) |
 | `curvature` | Gauss–Newton curvature and the Laplace covariance Ŝ as gaussx operators; their low-rank and diagonal forms; perturbation sampling | Wave 1 (#17, #18) |
 | `diagnose` | the averaging kernel, degrees of freedom for signal, information content, evidence at the minimum, the prior-precision search | Wave 2 (#20, #21) |
+| `blr` | the Bayesian learning rule as optax `GradientTransformation`s that carry a Gaussian over the parameters in their state: `blr_diagonal`, `ivon` | Wave 5 (#59, #60) |
 | `solve` | `GaussNewtonCG` (Gauss–Newton and Levenberg–Marquardt with an inner CG), `dual_solve`, `laplace_mode`, positivity and bounds by reparametrisation | Wave 3 (#23 to #26) |
 
-`curvature` sits below `diagnose`, which reads the operators it builds; `adjoint` and `solve` sit beside `curvature`, and none of the four imports `diagnose`.
+`curvature` sits below `diagnose`, which reads the operators it builds; `adjoint` and `solve` sit beside `curvature`, and none of the four imports `diagnose`. `blr` may import `curvature` and nothing else in the package, and no other module imports `blr`.
 
 ### Boundaries
 
@@ -31,7 +32,8 @@ It is one package, `src/argminax/`. Logic lives in `argminax._src.<module>`, and
 - **One step is gaussx's; the loop is argminax's.** A single Newton or Gauss–Newton step's algebra (`newton_update`, `gauss_newton_precision`), structured solves and log-determinants come from gaussx; argminax iterates them to a tolerance and reads the curvature at the end.
 - **The caller owns the cost.** A consumer passes J or its residuals r in, in optimistix's `fn(y, args)` form; argminax never builds a forward model, an observation operator or a covariance from data.
 - **optimistix is pinned to one minor version** (`optimistix>=0.1.0,<0.2`), because `KStep.apply` reads the private layout of optimistix's solve inputs. Raising the pin means re-running the adjoint tests against the new layout.
-- **Optional extras are imported lazily.** `matfree` (stochastic Lanczos quadrature) is the `argminax[matfree]` extra; a function that needs it imports it when called and raises `MissingExtraError` naming the extra.
+- **Optional extras are imported lazily.** `matfree` (stochastic Lanczos quadrature) is the `argminax[matfree]` extra and optax is the `argminax[optax]` extra; a function that needs one imports it when called and raises `MissingExtraError` naming the extra. `import argminax.blr` therefore works without optax, and optax types appear only under `TYPE_CHECKING`.
+- **A transform is stepped, a solver converges.** The transforms of `argminax.blr` are optax `GradientTransformation`s: the caller steps them on minibatches, they never run to a tolerance and they report no `RESULTS`. They take the gradient of the cost, as every optax optimiser does, and a curvature estimate is the curvature of the cost (positive semidefinite), never the Hessian of a log-likelihood (decided in #59).
 
 Dependencies point one way. The consumers are vardax, radtrax, plumax, pyrox-gp, pyrox-lgm, pyrox-nn and gaussx (whose `laplace_mode` moves here); their switch-over issues sit under [#12](https://github.com/jejjohnson/argminax/issues/12). Keep their imports working: a rename or removal of a public name goes through a deprecation (the old name keeps working with a `DeprecationWarning` that names the replacement for at least one release).
 
@@ -46,6 +48,7 @@ Each foundation brings a rule. Breaking one runs fine on your example and fails 
 | **lineax** | linear solves, and the PSD tags on every curvature operator | Solve, never invert: no `jnp.linalg.inv`, and no dense `jnp.linalg.solve` in library code. A Gauss–Newton or Laplace operator carries `lx.positive_semidefinite_tag` (or `symmetric_tag`), and nothing claims PSD that is not. |
 | **optimistix** | `minimise`, `least_squares`, `root_find`, the solver and adjoint protocols, `RESULTS` | argminax's solvers subclass optimistix's abstract solvers and its adjoints subclass `optx.AbstractAdjoint`; a non-converged solve is reported through `RESULTS`, never an exception. Check `solution.result` before trusting a gradient through the solve. |
 | **gaussx** | structured operators, solves, log-determinants and one step's algebra | Curvature is returned as a gaussx operator and never formed densely in library code. |
+| **optax** (the `optax` extra) | the `GradientTransformation` protocol, schedules and `optax.chain` for `argminax.blr` | A transform is an `init` / `update` pair of pure functions; its state is a `NamedTuple` of arrays, as optax states are (the one exception to "results are `eqx.Module`s"), and a step size may be an optax schedule of the step count. |
 | **jaxtyping** | array annotations | Named dims from the shared vocabulary ("House style"): `state` for the optimisation variable x and anything indexed like it, `obs` for observation-space vectors, `residual` for stacked whitened residuals, `member` for Monte Carlo draws and Hutchinson probes, and `*state` for a state of any shape. |
 | **einx** | reductions, contractions and rearranges on dense arrays | No `axis=`, `.T`, `reshape` or `[:, None]` on a dense array; a lineax or gaussx operator keeps its own methods (`.mv`, `.T`) and is never materialised to use einx. |
 | **SciPy, hypothesis** (test group) | references for the nonlinear solvers; drawn problem sizes and seeds | Test oracles, not runtime dependencies: library code never imports them, and a bare install imports argminax without the test group (SciPy is installed anyway, as a dependency of JAX). |
@@ -67,6 +70,9 @@ Before writing a helper, a solver, an operator or a diagnostic, find out whether
 | A dense `K.T @ inv(S_eps) @ K + inv(S_a)` | `gaussx.gauss_newton_operator` (matrix-free and PSD-tagged) or `gaussx.gauss_newton_precision` for a small dense Jacobian; `argminax.curvature` builds Ŝ on them in Wave 1 (#17) |
 | A log-determinant | gaussx (`gaussx.logdet` and the structured forms); `matfree` behind the `argminax[matfree]` extra for stochastic Lanczos quadrature |
 | One Newton step | `gaussx.newton_update` |
+| One step of the Bayesian learning rule | `gaussx.blr_diag_update`, `gaussx.blr_full_update`, called on the log-joint (the prior folded into the gradient and the Hessian) |
+| An Adam-like optimiser that also gives a variance | `argminax.blr.blr_diagonal`, `argminax.blr.ivon` |
+| An optax import, a step-size schedule lookup or an option check in a transform | `require_optax`, `step_size` and the `require_*` checks in `argminax._src.blr._optax` |
 | Differentiating through a converged minimum | `optx.ImplicitAdjoint`; argminax adds `KStep` and `OneStep` only for a solver stopped early (Wave 1, #15) |
 | A type for a cost or residual function | `Objective`, `Residuals` (`argminax._typing`) |
 | A new exception for bad input or a missing extra | `ValidationError`, `MissingExtraError` |
@@ -118,7 +124,7 @@ Most rules here are tests, so CI tells you when one breaks. Read a test's docstr
 | `tests/test_exceptions.py` | The hierarchy: every error is an `ArgminaxError` and its stdlib base |
 | `tests/conftest.py` | Every test runs with `jax_enable_x64` on |
 | `tests/test_harness.py` | The reference harness in `tests/_harness.py`: the linear-Gaussian closed forms agree with each other (Ŝ with the inverse Hessian of J, the evidence with the Laplace identity) to 1e-12, and each helper passes on its exact case and fails on a perturbed one |
-| The `bare-install` job in `ci.yml` | A plain `pip install .` imports argminax without the test group |
+| The `bare-install` job in `ci.yml` | A plain `pip install .` imports argminax without the test group, and `argminax.blr` without optax: a transform then raises `MissingExtraError` naming `argminax[optax]` |
 | `uv lock --check` in `lint.yml`, and the checks in `release-please.yml` | `uv.lock` matches `pyproject.toml` on every PR; on the release PR, which GitHub runs no workflows for, the lockfile and the tests are checked from the release job and posted as the "release PR checks" check run |
 | `tests/test_build_docs.py` | The two-tool docs pipeline: inventory parsing, anchor repair, link checking, the inventory port and the absolute nav URL in `docs/myst.yml`, the files copied to the site root (`ROOT_FILES`) |
 | `[tool.coverage.report] fail_under = 90` | Coverage of `src/argminax` in every coverage-enabled run (CI, `uv run poe test-cov`) |
