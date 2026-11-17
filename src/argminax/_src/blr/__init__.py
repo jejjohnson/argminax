@@ -5,14 +5,17 @@ from __future__ import annotations
 from argminax._src.blr._diagonal import BLRDiagonalState, blr_diagonal
 from argminax._src.blr._full_rank import BLRFullRankState, blr_full_rank, newton
 from argminax._src.blr._ivon import IVONState, ivon
+from argminax._src.blr._low_rank import BLRLowRankState, blr_low_rank
 
 
 __all__ = [
     "BLRDiagonalState",
     "BLRFullRankState",
+    "BLRLowRankState",
     "IVONState",
     "blr_diagonal",
     "blr_full_rank",
+    "blr_low_rank",
     "ivon",
     "newton",
 ]
