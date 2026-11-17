@@ -2,7 +2,10 @@
 
 Each holds for any linear-Gaussian posterior, not only for retrievals. Exact
 for a small state, stochastic with a reported standard error above, and
-always under ``jit`` and ``vmap``, with randomness only from keys.
+always under ``jit`` and ``vmap``, with randomness only from keys. The
+averaging kernel is written J_x̂ = ∂x̂/∂x (Rodgers' A), the posterior
+covariance and precision Σ_x∣y and Λ_x∣y, and the prior covariance Σ_x, for a
+state x ∈ ℝ^D_x.
 """
 
 from __future__ import annotations
@@ -36,7 +39,8 @@ class TraceEstimate(eqx.Module):
         value: The estimate.
         stderr: Its standard error: exactly 0 when the value was computed
             exactly, otherwise the sample standard deviation of the probe
-            terms over √K. It does not see the bias of an inexact solve.
+            terms over √N_ℰ, for N_ℰ probes. It does not see the bias of an
+            inexact solve.
     """
 
     value: Float[Array, ""]
@@ -63,13 +67,13 @@ def _require_probes(num_probes: int) -> None:
 
 
 def _mean_and_stderr(terms: Float[Array, " member"]) -> TraceEstimate:
-    """The mean of K probe terms and its standard error."""
+    """The mean of N_ℰ probe terms and its standard error."""
     num_terms = terms.shape[0]
-    # t̄ = (1/K) ∑ₖ tₖ
+    # t̄ = (1/N_ℰ) ∑ₑ t⁽ᵉ⁾
     mean = einx.mean("member ->", terms)
-    # s = √(∑ₖ (tₖ − t̄)² / (K − 1)), the sample standard deviation
+    # s = √(∑ₑ (t⁽ᵉ⁾ − t̄)² / (N_ℰ − 1)), the sample standard deviation
     spread = jnp.std(terms, ddof=1)
-    # s / √K
+    # s / √N_ℰ
     stderr = spread / jnp.sqrt(num_terms)
     return TraceEstimate(value=mean, stderr=stderr)
 
@@ -83,33 +87,35 @@ def _exact(value: Float[Array, ""]) -> TraceEstimate:
 def averaging_kernel(
     posterior: Laplace, prior_cov: lx.AbstractLinearOperator | None = None
 ) -> lx.AbstractLinearOperator:
-    """Return the averaging kernel A = ∂x̂/∂x of a Laplace posterior, lazily.
+    """Return the averaging kernel J_x̂ = ∂x̂/∂x of a Laplace posterior, lazily.
 
-        A = I − Ŝ Sₐ⁻¹,   in whitened coordinates A = I − Ĥ⁻¹
+        J_x̂ = I − Σ_x∣y Λ_x,   in whitened coordinates J_x̂ = I − Λ_x∣y⁻¹
 
-    A says how much a change in the true state moves the retrieved one:
-    A = I means the measurement decides everything, A = 0 means the prior
-    does (Rodgers 2000, ch. 2). Without ``prior_cov`` the posterior is taken
-    to be in whitened coordinates (prior N(0, I)), where A is symmetric
-    with eigenvalues σᵢ²/(1 + σᵢ²) in [0, 1). Each product is one solve
-    with Ĥ (and, with ``prior_cov``, one with Sₐ); rows of A are never
-    formed unless asked for.
+    with Σ_x∣y = Λ_x∣y⁻¹ the posterior covariance and Λ_x = Σ_x⁻¹ the prior
+    precision, all D_x × D_x. J_x̂ says how much a change in the true state
+    moves the retrieved one: J_x̂ = I means the measurement decides
+    everything, J_x̂ = 0 means the prior does (Rodgers 2000, ch. 2, where it
+    is A). Without ``prior_cov`` the posterior is taken to be in whitened
+    coordinates (prior 𝒩(0, I)), where J_x̂ is symmetric with eigenvalues
+    σᵢ²/(1 + σᵢ²) in [0, 1), σᵢ the singular values of the whitened
+    Jacobian. Each product is one solve with Λ_x∣y (and, with ``prior_cov``,
+    one with Σ_x); rows of J_x̂ are never formed unless asked for.
 
     Args:
-        posterior: The posterior N(x̂, Ĥ⁻¹), with a vector mode.
-        prior_cov: The prior covariance Sₐ, for a posterior in physical
+        posterior: The posterior 𝒩(x̂, Λ_x∣y⁻¹), with a vector mode.
+        prior_cov: The prior covariance Σ_x, for a posterior in physical
             coordinates; ``None`` for whitened ones.
 
     Returns:
-        A, an (N, N) lazy operator; tagged symmetric and positive
+        J_x̂, a D_x × D_x lazy operator; tagged symmetric and positive
         semidefinite in whitened coordinates, untagged otherwise.
 
     Raises:
         ValidationError: If the mode is not one-dimensional.
 
     Examples:
-        One unknown measured with the prior's own variance: Ĥ = 2, so half
-        the retrieved state comes from the measurement.
+        One unknown measured with the prior's own variance: Λ_x∣y = 2, so
+        half the retrieved state comes from the measurement.
 
         >>> import jax.numpy as jnp
         >>> from argminax.curvature import gauss_newton
@@ -121,8 +127,8 @@ def averaging_kernel(
         >>> bool(jnp.allclose(kernel.as_matrix(), 0.5))
         True
 
-        In physical coordinates with Sₐ = 2: Ĥ = 1 + ½, Ŝ = ⅔, so
-        A = 1 − Ŝ Sₐ⁻¹ = ⅔.
+        In physical coordinates with Σ_x = 2: Λ_x∣y = 1 + ½, Σ_x∣y = ⅔, so
+        J_x̂ = 1 − Σ_x∣y Λ_x = ⅔.
 
         >>> import lineax as lx
         >>> prior_cov = lx.DiagonalLinearOperator(jnp.full(1, 2.0))
@@ -139,9 +145,9 @@ def averaging_kernel(
     if prior_cov is None:
 
         def whitened(vector: Float[Array, " state"]) -> Float[Array, " state"]:
-            # Ĥ⁻¹ v
+            # Λ_x∣y⁻¹ v
             covariance_vector = covariance.mv(vector)
-            # A v = v − Ĥ⁻¹ v
+            # J_x̂ v = v − Λ_x∣y⁻¹ v
             return vector - covariance_vector
 
         return lx.FunctionLinearOperator(
@@ -151,11 +157,11 @@ def averaging_kernel(
         )
 
     def physical(vector: Float[Array, " state"]) -> Float[Array, " state"]:
-        # Sₐ⁻¹ v
+        # Λ_x v = Σ_x⁻¹ v
         prior_precision_vector = gx.solve(prior_cov, vector)
-        # Ŝ Sₐ⁻¹ v
+        # Σ_x∣y Λ_x v
         covariance_vector = covariance.mv(prior_precision_vector)
-        # A v = v − Ŝ Sₐ⁻¹ v
+        # J_x̂ v = v − Σ_x∣y Λ_x v
         return vector - covariance_vector
 
     return lx.FunctionLinearOperator(physical, structure)
@@ -169,25 +175,26 @@ def degrees_of_freedom(
 ) -> TraceEstimate:
     """Return the degrees of freedom for signal, the trace of the averaging kernel.
 
-        dₛ = tr A = ∑ᵢ σᵢ²/(1 + σᵢ²),   dₛ ≈ (1/K) ∑ₖ zₖᵀ A zₖ
+        dₛ = tr J_x̂ = ∑ᵢ σᵢ²/(1 + σᵢ²),   dₛ ≈ (1/N_ℰ) ∑ₑ v⁽ᵉ⁾ᵀ J_x̂ v⁽ᵉ⁾
 
-    σᵢ are the singular values of the whitened Jacobian. Without a key the
-    trace is exact (`gaussx.trace`, which forms the diagonal of A by N
-    products); with one it is Hutchinson's estimate over K Rademacher probes
-    from the key, each one product with A (so one solve), with the standard
-    error of the K terms. Because dₛ = N − tr(Ĥ⁻¹) in whitened coordinates
-    and zᵀz = N for a Rademacher probe, this is the same estimator as
-    probing tr(Ĥ⁻¹).
+    σᵢ are the singular values of the whitened Jacobian and v⁽ᵉ⁾ ∈ {−1, +1}^D_x
+    the e-th of N_ℰ Rademacher probes. Without a key the trace is exact
+    (`gaussx.trace`, which forms the diagonal of J_x̂ by D_x products); with
+    one it is Hutchinson's estimate over the N_ℰ probes from the key, each
+    one product with J_x̂ (so one solve), with the standard error of the N_ℰ
+    terms. Because dₛ = D_x − tr(Λ_x∣y⁻¹) in whitened coordinates and
+    v⁽ᵉ⁾ᵀ v⁽ᵉ⁾ = D_x for a Rademacher probe, this is the same estimator as
+    probing tr(Λ_x∣y⁻¹).
 
     Algorithm:
-        1. Without a key, return the exact trace of A.
-        2. With one, draw K Rademacher probes zₖ from the key.
-        3. Average zₖᵀ A zₖ over the probes, with the standard error of the
-           K terms.
+        1. Without a key, return the exact trace of J_x̂.
+        2. With one, draw N_ℰ Rademacher probes v⁽ᵉ⁾ from the key.
+        3. Average v⁽ᵉ⁾ᵀ J_x̂ v⁽ᵉ⁾ over the probes, with the standard error
+           of the N_ℰ terms.
 
     Args:
-        kernel: The averaging kernel A, from `averaging_kernel`.
-        num_probes: Number of probes K, used only with a key.
+        kernel: The averaging kernel J_x̂, from `averaging_kernel`.
+        num_probes: Number of probes N_ℰ, used only with a key.
         key: Random key for the probes; ``None`` for the exact trace.
 
     Returns:
@@ -208,7 +215,7 @@ def degrees_of_freedom(
         >>> bool(jnp.allclose(exact.value, 1.5)), bool(exact.stderr == 0.0)
         (True, True)
 
-        A diagonal A is probed exactly by Rademacher probes.
+        A diagonal J_x̂ is probed exactly by Rademacher probes.
 
         >>> probed = degrees_of_freedom(
         ...     averaging_kernel(posterior), key=jax.random.key(0)
@@ -236,17 +243,17 @@ def degrees_of_freedom(
     _require_probes(num_probes)
     structure = kernel.in_structure()
     probe_shape = (num_probes, *structure.shape)
-    # zₖ ∈ {−1, +1}ᴺ
+    # v⁽ᵉ⁾ ∈ {−1, +1}^D_x
     probes = jax.random.rademacher(key, probe_shape, structure.dtype)
 
     def probe_term(probe: Float[Array, " state"]) -> Float[Array, ""]:
-        # A z
+        # J_x̂ v
         kernel_probe = kernel.mv(probe)
-        # zᵀ A z
+        # vᵀ J_x̂ v
         return jnp.vdot(probe, kernel_probe)
 
     terms = jax.vmap(probe_term)(probes)
-    # dₛ ≈ (1/K) ∑ₖ zₖᵀ A zₖ
+    # dₛ ≈ (1/N_ℰ) ∑ₑ v⁽ᵉ⁾ᵀ J_x̂ v⁽ᵉ⁾
     return _mean_and_stderr(terms)
 
 
@@ -257,7 +264,10 @@ def _slq_logdet(
     num_matvecs: int,
     key: PRNGKeyArray,
 ) -> TraceEstimate:
-    """log |M| by stochastic Lanczos quadrature, with its standard error."""
+    """log det M of a symmetric positive definite M, by stochastic Lanczos quadrature.
+
+    Returns the estimate with its standard error over the N_ℰ probes.
+    """
     try:
         from matfree import decomp, funm
     except ImportError as error:  # pragma: no cover - matfree comes with gaussx
@@ -272,16 +282,16 @@ def _slq_logdet(
     num_steps = min(num_matvecs, size)
     tridiagonalise = decomp.tridiag_sym(num_steps)
     integrand = funm.monte_carlo_funm_sym_logdet(tridiagonalise)
-    # zₖ ∈ {−1, +1}ᴺ
+    # v⁽ᵉ⁾ ∈ {−1, +1}^D_x
     probes = jax.random.rademacher(key, (num_probes, size), structure.dtype)
     matvec: Callable[[Array], Array] = operator.mv
 
     def probe_term(probe: Float[Array, " state"]) -> Float[Array, ""]:
-        # zᵀ log(M) z, by m Lanczos steps
+        # vᵀ log(M) v, by num_matvecs Lanczos steps
         return integrand(matvec, probe)
 
     terms = jax.vmap(probe_term)(probes)
-    # log |M| ≈ (1/K) ∑ₖ zₖᵀ log(M) zₖ
+    # log det M ≈ (1/N_ℰ) ∑ₑ v⁽ᵉ⁾ᵀ log(M) v⁽ᵉ⁾
     return _mean_and_stderr(terms)
 
 
@@ -292,7 +302,7 @@ def _logdet_estimate(
     num_matvecs: int,
     key: PRNGKeyArray | None,
 ) -> TraceEstimate:
-    """log |Ĥ|, exact (`gaussx.logdet`) without a key, by SLQ with one."""
+    """log det Λ_x∣y, exact (`gaussx.logdet`) without a key, by SLQ with one."""
     if key is None:
         return _exact(gx.logdet(posterior.precision))
     _require_probes(num_probes)
@@ -311,32 +321,34 @@ def information_content(
 ) -> TraceEstimate:
     """Return the information content of the measurement, in nats.
 
-        H = ½ log |Sₐ Ŝ⁻¹| = ½ (log |Ĥ| + log |Sₐ|) = ½ ∑ᵢ log(1 + σᵢ²)
+        𝕀[x; y] = ½ log det(Σ_x Λ_x∣y) = ½ (log det Λ_x∣y + log det Σ_x)
+                = ½ ∑ᵢ log(1 + σᵢ²)
 
-    H is the entropy the measurement removed from the prior (Rodgers 2000,
-    ch. 2); in whitened coordinates (``prior_cov=None``) log |Sₐ| = 0.
-    Without a key log |Ĥ| is exact (`gaussx.logdet`); with one it is
-    stochastic Lanczos quadrature over K Rademacher probes of
-    ``num_matvecs`` Lanczos steps each, from the ``matfree`` extra, with
-    the standard error of the K terms. log |Sₐ| is always exact.
+    𝕀[x; y] is the entropy the measurement removed from the prior, the
+    mutual information between state and measurement (Rodgers 2000, ch. 2,
+    where it is H); in whitened coordinates (``prior_cov=None``)
+    log det Σ_x = 0. Without a key log det Λ_x∣y is exact (`gaussx.logdet`);
+    with one it is stochastic Lanczos quadrature over N_ℰ Rademacher probes
+    of ``num_matvecs`` Lanczos steps each, from the ``matfree`` extra, with
+    the standard error of the N_ℰ terms. log det Σ_x is always exact.
 
     Algorithm:
-        1. log |Ĥ|: exact without a key; with one, stochastic Lanczos
-           quadrature over K Rademacher probes, with its standard error.
-        2. log |Sₐ|: exact, or 0 in whitened coordinates.
-        3. H = ½ (log |Ĥ| + log |Sₐ|), with half the standard error of
-           log |Ĥ|.
+        1. log det Λ_x∣y: exact without a key; with one, stochastic Lanczos
+           quadrature over N_ℰ Rademacher probes, with its standard error.
+        2. log det Σ_x: exact, or 0 in whitened coordinates.
+        3. 𝕀[x; y] = ½ (log det Λ_x∣y + log det Σ_x), with half the standard
+           error of log det Λ_x∣y.
 
     Args:
-        posterior: The posterior N(x̂, Ĥ⁻¹), with a vector mode.
-        prior_cov: The prior covariance Sₐ, for a posterior in physical
+        posterior: The posterior 𝒩(x̂, Λ_x∣y⁻¹), with a vector mode.
+        prior_cov: The prior covariance Σ_x, for a posterior in physical
             coordinates; ``None`` for whitened ones.
-        num_probes: Number of probes K, used only with a key.
-        num_matvecs: Lanczos steps per probe, capped at N.
+        num_probes: Number of probes N_ℰ, used only with a key.
+        num_matvecs: Lanczos steps per probe, capped at D_x.
         key: Random key for the probes; ``None`` for the exact value.
 
     Returns:
-        H and its standard error (0 when exact).
+        𝕀[x; y] and its standard error (0 when exact).
 
     Raises:
         ValidationError: If the mode is not one-dimensional or
@@ -344,8 +356,8 @@ def information_content(
         MissingExtraError: With a key, if ``matfree`` is not installed.
 
     Examples:
-        One unknown measured with the prior's own variance: Ĥ = 2, so
-        H = ½ log 2.
+        One unknown measured with the prior's own variance: Λ_x∣y = 2, so
+        𝕀[x; y] = ½ log 2.
 
         >>> import jax.numpy as jnp
         >>> from argminax.curvature import gauss_newton
@@ -357,8 +369,8 @@ def information_content(
         >>> bool(jnp.allclose(content.value, 0.5 * jnp.log(2.0)))
         True
 
-        In physical coordinates with Sₐ = 2: Ĥ = 1 + ½, so
-        H = ½ log(Sₐ Ĥ) = ½ log 3.
+        In physical coordinates with Σ_x = 2: Λ_x∣y = 1 + ½, so
+        𝕀[x; y] = ½ log(Σ_x Λ_x∣y) = ½ log 3.
 
         >>> import lineax as lx
         >>> prior_cov = lx.DiagonalLinearOperator(jnp.full(1, 2.0))
@@ -378,12 +390,12 @@ def information_content(
     log_det = _logdet_estimate(
         posterior, num_probes=num_probes, num_matvecs=num_matvecs, key=key
     )
-    # log |Sₐ|, which is 0 in whitened coordinates
+    # log det Σ_x, which is 0 in whitened coordinates
     prior_log_det = 0.0 if prior_cov is None else gx.logdet(prior_cov)
-    # log |Ĥ| + log |Sₐ|
+    # log det Λ_x∣y + log det Σ_x
     total_log_det = log_det.value + prior_log_det
-    # H = ½ (log |Ĥ| + log |Sₐ|)
+    # 𝕀[x; y] = ½ (log det Λ_x∣y + log det Σ_x)
     value = 0.5 * total_log_det
-    # log |Sₐ| is exact, so only log |Ĥ| carries an error
+    # log det Σ_x is exact, so only log det Λ_x∣y carries an error
     stderr = 0.5 * log_det.stderr
     return TraceEstimate(value=value, stderr=stderr)

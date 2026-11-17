@@ -6,8 +6,8 @@ tolerance is here, as a ``lax.while_loop``, with the mode differentiated
 implicitly. Three entry points cover the three forms the stack uses:
 
 - `laplace_mode`: precision form, a GMRF prior (gaussx's own, and pyrox-lgm's);
-- `laplace_mode_covariance`: covariance form, a prior covariance K (pyrox-gp's
-  dense GPs);
+- `laplace_mode_covariance`: covariance form, a prior covariance K_XX
+  (pyrox-gp's dense GPs);
 - `laplace_mode_sites`: site form, where the caller supplies the posterior mean
   given site naturals (pyrox-gp's Markov GPs, through a Kalman smoother).
 """
@@ -85,7 +85,7 @@ def _site_derivatives(
     log_likelihood: Callable[[Float[Array, " state"]], Float[Array, " state"]],
     state: Float[Array, " state"],
 ) -> tuple[Float[Array, " state"], Float[Array, " state"]]:
-    """g and h = diag(∇² log p) of a likelihood that factorises over sites.
+    """g = ∇_f log p and h = diag(∇²_f log p) of a site-factorising likelihood.
 
     Site n depends on fₙ alone, so the Hessian of ∑ₙ log pₙ is diagonal and
     its product with a vector of ones is that diagonal.
@@ -110,9 +110,9 @@ def _sites(
     state: Float[Array, " state"],
     precision_floor: float,
 ) -> tuple[Float[Array, " state"], Float[Array, " state"]]:
-    """The Newton site naturals (λ, Λ) at f, by `gaussx.newton_update`."""
+    """The Newton site naturals (Λμ_site, Λ_site) at f, by `gaussx.newton_update`."""
     gradient, curvature = _site_derivatives(log_likelihood, state)
-    # Λ = max(−h, floor), λ = g + Λ ⊙ f
+    # Λ_site = max(−h, floor), Λμ_site = g + Λ_site ⊙ f
     information, precision = gx.newton_update(
         state, gradient, curvature, precision_floor=precision_floor
     )
@@ -128,16 +128,18 @@ def _implicit_fixed_point(
     update: Callable[[Float[Array, " state"]], Float[Array, " state"]],
     estimate: Float[Array, " state"],
 ) -> Float[Array, " state"]:
-    """Attach implicit tangents to a fixed point f̂ = Φ(f̂).
+    """Attach implicit tangents to a fixed point f̂ = μ_f∣y(f̂).
 
-        ∂f̂/∂θ = (I − ∂Φ/∂f)⁻¹ ∂Φ/∂θ
+        ∂f̂/∂θ = (I − ∂μ_f∣y/∂f)⁻¹ ∂μ_f∣y/∂θ
 
-    The root is Φ(f) − f; its Jacobian is not symmetric in general, so the
-    tangent solve is a dense LU on the N × N Jacobian (N products with it).
+    μ_f∣y(f) is ``update``: the posterior mean under the sites at f, with θ
+    every array it closes over. The root is μ_f∣y(f) − f; its Jacobian is not
+    symmetric in general, so the tangent solve is a dense LU on the N × N
+    Jacobian (N products with it).
     """
 
     def root(state: Float[Array, " state"]) -> Float[Array, " state"]:
-        # Φ(f) − f
+        # μ_f∣y(f) − f
         return update(state) - state
 
     def tangent_solve(matvec: Callable, vector: Float[Array, " state"]) -> Array:
@@ -157,7 +159,7 @@ def _implicit_fixed_point(
 
 
 class LaplaceModeResult(eqx.Module):
-    """The Gaussian N(x̂, Λ_x|y⁻¹) at the mode, with gaussx's `LaplaceResult` fields.
+    """The Gaussian 𝒩(x̂, Λ_x∣y⁻¹) at the mode, with gaussx's `LaplaceResult` fields.
 
     The fields are those of ``gaussx.LaplaceResult``, so code that reads it
     (``gaussx.vb_mean_correction``, pyrox-lgm's ``inla()``) works on this
@@ -167,9 +169,9 @@ class LaplaceModeResult(eqx.Module):
     Attributes:
         mode: The mode x̂, implicitly differentiable in every array the prior
             and likelihood hold.
-        hessian: Λ_x|y = Λ_x + Aᵀ Λ_site A at the mode, in gaussx's structure.
-        factor: The factorisation of Λ_x|y, with ``solve(b)`` and ``logdet()``.
-        log_marginal: The Laplace log-marginal log π̃(y ∣ θ).
+        hessian: Λ_x∣y = Λ_x + Hᵀ Λ_site H at the mode, in gaussx's structure.
+        factor: The factorisation of Λ_x∣y, with ``solve(b)`` and ``logdet()``.
+        log_marginal: The Laplace approximation of log p(y ∣ θ).
         n_iter: Newton steps taken.
         converged: Whether the last step met the tolerance; implicit gradients
             assume it.
@@ -208,7 +210,7 @@ def _damped_newton(
     tol: float,
     damping: float,
 ) -> tuple[Float[Array, " state"], Int[Array, ""], Bool[Array, ""]]:
-    """x ← x + α (x̃ − x) until ‖Δx‖_∞ ≤ tol (1 + ‖x‖_∞), or ``max_iter`` steps."""
+    """x ← x + α (x_Newton − x) until ‖Δx‖_∞ ≤ tol (1 + ‖x‖_∞), or ``max_iter``."""
 
     def threshold(state: Float[Array, " state"]) -> Float[Array, ""]:
         size = _sup_norm(state)
@@ -222,7 +224,7 @@ def _damped_newton(
     def step(carry: tuple[Array, Array, Array]) -> tuple[Array, Array, Array]:
         state, iteration, _ = carry
         newton_state = target(state)
-        # x⁽ʲ⁺¹⁾ = x⁽ʲ⁾ + α (x̃ − x⁽ʲ⁾)
+        # x⁽ⁱ⁺¹⁾ = x⁽ⁱ⁾ + α (x_Newton − x⁽ⁱ⁾)
         next_state = state + damping * (newton_state - state)
         # ‖Δx‖_∞
         step_norm = _sup_norm(next_state - state)
@@ -238,11 +240,11 @@ def _damped_newton(
 def _implicit_mode(
     model: Any, estimate: Float[Array, " state"], factor: Any
 ) -> Float[Array, " state"]:
-    """Attach implicit tangents to the mode: ∂x̂/∂θ = Λ_x|y⁻¹ ∂θ(−∇𝒥), one solve.
+    """Attach implicit tangents to the mode: ∂x̂/∂θ = Λ_x∣y⁻¹ ∂θ(−∇𝒥), one solve.
 
     The root is −∇𝒥(x), or with a hard constraint −P ∇𝒥(P x) − Π_V x
-    (P = I − Π_V), whose Jacobian −(P Λ_x|y P + Π_V) is symmetric; tangents are
-    solved with the factor of Λ_x|y at the mode, kriged for the constraint.
+    (P = I − Π_V), whose Jacobian −(P Λ_x∣y P + Π_V) is symmetric; tangents are
+    solved with the factor of Λ_x∣y at the mode, kriged for the constraint.
     """
     constrained = model.null_space is not None
     frozen = _stop_gradient(model)
@@ -261,11 +263,11 @@ def _implicit_mode(
     def negative_inverse(_: Any, vector: Array) -> Array:
         # Π_V b
         null = frozen.null_component(vector)
-        # Λ_x|y⁻¹ (b − Π_V b)
+        # Λ_x∣y⁻¹ (b − Π_V b)
         unconstrained = factor.solve(vector - null)
-        # krige(Λ_x|y⁻¹ (b − Π_V b))
+        # krige(Λ_x∣y⁻¹ (b − Π_V b))
         inner = frozen.krige(factor, unconstrained)[0]
-        # −(P Λ_x|y P + Π_V)⁻¹ b
+        # −(P Λ_x∣y P + Π_V)⁻¹ b
         return -(inner + null)
 
     def tangent_solve(matvec: Callable, vector: Array) -> Array:
@@ -290,16 +292,17 @@ def laplace_mode(
 ) -> LaplaceModeResult:
     """Mode and Gaussian approximation of a latent Gaussian model, in precision form.
 
-        Λ_x|y⁽ʲ⁾ x̃ = Λ_x μ_x + Aᵀ (g⁽ʲ⁾ + Λ_site⁽ʲ⁾ A x⁽ʲ⁾)
-        x⁽ʲ⁺¹⁾ = x⁽ʲ⁾ + α (x̃ − x⁽ʲ⁾)
+        Λ_x∣y⁽ⁱ⁾ x_Newton = Λ_x μ_x + Hᵀ (g⁽ⁱ⁾ + Λ_site⁽ⁱ⁾ H x⁽ⁱ⁾)
+        x⁽ⁱ⁺¹⁾ = x⁽ⁱ⁾ + α (x_Newton − x⁽ⁱ⁾)
 
-    The model is x ~ ``prior`` (a gaussx ``GaussianMRF`` or ``IntrinsicGMRF``,
-    precision Λ_x, mean μ_x), η = A x + o and y ∣ η ~ ``likelihood``, a
-    site-factorising gaussx likelihood holding y. This is gaussx's
-    ``laplace_mode`` moved here (jejjohnson/gaussx#814), with the same
-    signature and result: each step is `gaussx.LaplaceModel.newton`, Λ_x|y
-    keeps the structure gaussx gives it (banded, sparse, diagonal or dense),
-    and a hard constraint Vᵀ x = 0 is kriged at every step.
+    The model is x ~ ``prior`` (a gaussx ``GaussianMRF`` or ``IntrinsicGMRF``
+    over x ∈ ℝ^D_x, precision Λ_x, mean μ_x) and y ∣ H x + o ~ ``likelihood``,
+    a site-factorising gaussx likelihood holding y ∈ ℝ^D_y. At iteration i,
+    g⁽ⁱ⁾ = ∇ log p(y ∣ H x⁽ⁱ⁾ + o) and Λ_site⁽ⁱ⁾ = −∇² of the same, per site.
+    This is gaussx's ``laplace_mode`` moved here (jejjohnson/gaussx#814), with
+    the same signature and result: each step is `gaussx.LaplaceModel.newton`,
+    Λ_x∣y keeps the structure gaussx gives it (banded, sparse, diagonal or
+    dense), and a hard constraint Vᵀ x = 0 is kriged at every step.
 
     Algorithm:
         1. Build the model (`gaussx.laplace_model`) and project the start off
@@ -308,15 +311,15 @@ def laplace_mode(
            stopped, until ‖Δx‖_∞ ≤ tol (1 + ‖x‖_∞), with tol floored at 64
            machine epsilons of the dtype.
         3. Attach implicit tangents to the mode (``jax.lax.custom_root``),
-           solved with the factor of Λ_x|y at the mode: one solve per VJP.
+           solved with the factor of Λ_x∣y at the mode: one solve per VJP.
         4. Refactorise at the mode and assemble the log-marginal
            (`gaussx.laplace_result`).
 
     Args:
         prior: The latent field, a gaussx ``GaussianMRF`` or ``IntrinsicGMRF``.
         likelihood: A site-factorising gaussx likelihood holding y.
-        projector: The projector A, (M, N); ``None`` is the identity.
-        offset: The offset o, a scalar or of length M.
+        projector: The projector H, (D_y, D_x); ``None`` is the identity.
+        offset: The offset o, a scalar or of length D_y.
         init: Starting point x⁽⁰⁾; zeros by default.
         max_iter: Maximum Newton steps.
         tol: Relative tolerance on the step's sup-norm.
@@ -411,9 +414,9 @@ class SiteLaplaceResult(eqx.Module):
 
     Attributes:
         mode: The mode f̂, implicitly differentiable through the fixed point
-            f̂ = Φ(f̂) of the posterior-mean map.
-        site_information: The site information λ = g + Λ ⊙ f̂.
-        site_precision: The site precision Λ = max(−h, floor).
+            f̂ = μ_f∣y(f̂) of the posterior-mean map.
+        site_information: The site information Λμ_site = g + Λ_site ⊙ f̂.
+        site_precision: The site precision Λ_site = max(−h, floor).
         n_iter: Iterations taken.
         converged: Whether the last step met the tolerance.
     """
@@ -426,22 +429,27 @@ class SiteLaplaceResult(eqx.Module):
 
 
 class CovarianceLaplaceResult(eqx.Module):
-    """The Gaussian at the mode of a GP with prior covariance K.
+    """The Gaussian at the mode of a GP with prior covariance K_XX.
 
-        q(f) = N(m, V),   V = (K⁻¹ + Λ)⁻¹ = K − K (K + Λ⁻¹)⁻¹ K
+        q(f) = 𝒩(μ_f∣y, Σ_f∣y)
+        Σ_f∣y = (K_XX⁻¹ + Λ_site)⁻¹ = K_XX − K_XX (K_XX + Λ_site⁻¹)⁻¹ K_XX
+
+    with f ∈ ℝ^N the latent values at the N training inputs X, K_XX (N × N)
+    the prior covariance and Λ_site the diagonal matrix of site precisions.
 
     Attributes:
         mode: The mode f̂ (the last iterate), implicitly differentiable.
-        site_information: The site information λ at f̂.
-        site_precision: The site precision Λ at f̂.
-        mean: The posterior mean m given the sites at f̂, equal to f̂ at
+        site_information: The site information Λμ_site at f̂.
+        site_precision: The site precision Λ_site at f̂.
+        mean: The posterior mean μ_f∣y given the sites at f̂, equal to f̂ at
             convergence.
-        variance: diag(V), the marginal variances.
+        variance: diag(Σ_f∣y), the marginal variances.
         log_marginal: The Laplace log-marginal at f̂,
-            ∑ₙ log p(yₙ ∣ f̂ₙ) − ½ (f̂ − μ)ᵀ K⁻¹ (f̂ − μ) − ½ log |I + √Λ K √Λ|.
+            ∑ₙ log p(yₙ ∣ f̂ₙ) − ½ (f̂ − μ_f)ᵀ K_XX⁻¹ (f̂ − μ_f)
+            − ½ log |I + Λ_site^½ K_XX Λ_site^½|.
         n_iter: Iterations taken.
         converged: Whether the last step met the tolerance.
-        prior_cov: The prior covariance K the fit was made with.
+        prior_cov: The prior covariance K_XX the fit was made with.
     """
 
     mode: Float[Array, " state"]
@@ -456,12 +464,12 @@ class CovarianceLaplaceResult(eqx.Module):
 
     @property
     def posterior(self) -> Laplace:
-        """N(f̂, V) as an `argminax.curvature.Laplace`, with precision K⁻¹ + Λ."""
-        # K⁻¹
+        """𝒩(f̂, Σ_f∣y) as a `Laplace`, with precision K_XX⁻¹ + Λ_site."""
+        # K_XX⁻¹
         inverse = gx.inv(self.prior_cov)
-        # diag(Λ)
+        # Λ_site as a diagonal matrix
         sites = lx.DiagonalLinearOperator(self.site_precision)
-        # K⁻¹ + Λ
+        # K_XX⁻¹ + Λ_site
         untagged = inverse + sites
         precision = lx.TaggedLinearOperator(untagged, _PSD)
         return Laplace(self.mode, precision)
@@ -473,7 +481,7 @@ def _site_loop(
     max_iter: int,
     tol: float,
 ) -> tuple[Float[Array, " state"], Any, Int[Array, ""], Bool[Array, ""]]:
-    """Iterate (f, carry) ← update(f, carry) until max |Δf| < tol."""
+    """Iterate (f, carry) ← update(f, carry) until ‖Δf‖_∞ < tol."""
 
     def keep_going(state: tuple[Array, Any, Array, Array]) -> Array:
         _, _, iteration, step_norm = state
@@ -482,7 +490,7 @@ def _site_loop(
     def step(state: tuple[Array, Any, Array, Array]) -> tuple[Array, Any, Array, Array]:
         latent, carry, iteration, _ = state
         next_latent, next_carry = update(latent, carry)
-        # max |Δf|
+        # ‖Δf‖_∞
         step_norm = _sup_norm(next_latent - latent)
         return next_latent, next_carry, iteration + 1, step_norm
 
@@ -504,32 +512,36 @@ def laplace_mode_covariance(
     damping: float = 1.0,
     precision_floor: float = 1e-6,
 ) -> CovarianceLaplaceResult:
-    """Laplace approximation of a GP with prior covariance K, by damped Newton.
+    """Laplace approximation of a GP with prior covariance K_XX, by damped Newton.
 
-        f̃ = μ + K (K + Λ⁻¹)⁻¹ (λ/Λ − μ),   f ← (1 − α) f + α f̃
+        f_Newton = μ_f + K_XX (K_XX + Λ_site⁻¹)⁻¹ (μ_site − μ_f)
+        f ← (1 − α) f + α f_Newton
 
-    The sites (λ, Λ) = `gaussx.newton_update` at f, with Λ = max(−h, floor),
-    are a Gaussian pseudo-likelihood, and f̃ is the posterior mean under it
-    (Rasmussen and Williams 2006, algorithm 3.1). This is the loop of
-    pyrox-gp's ``LaplaceInference`` and ``GaussNewtonInference`` (which differ
-    only in their floor), as a ``lax.while_loop``.
+    f ∈ ℝ^N are the latent values at the N training inputs X, with prior mean
+    μ_f and covariance K_XX. The sites (Λμ_site, Λ_site) = `gaussx.newton_update`
+    at f, with Λ_site = max(−h, floor), g = ∇_f log p and h = diag(∇²_f log p),
+    are a Gaussian pseudo-likelihood with mean μ_site = Λμ_site / Λ_site, and
+    f_Newton is the posterior mean under it (Rasmussen and Williams 2006,
+    algorithm 3.1). This is the loop of pyrox-gp's ``LaplaceInference`` and
+    ``GaussNewtonInference`` (which differ only in their floor), as a
+    ``lax.while_loop``.
 
     Algorithm:
-        1. From f = μ, iterate the damped update until max |Δf| < tol (tol
+        1. From f = μ_f, iterate the damped update until ‖Δf‖_∞ < tol (tol
            floored at 64 machine epsilons of the dtype) or ``max_iter``.
-        2. Make the mode implicit through its fixed point f̂ = Φ(f̂).
+        2. Make the mode implicit through its fixed point f̂ = μ_f∣y(f̂).
         3. At f̂: the sites, the posterior mean and marginal variances, and the
            Laplace log-marginal.
 
     Args:
-        prior_cov: K, (N, N), tagged positive semidefinite (jitter included).
-        prior_mean: μ, shape (N,).
+        prior_cov: K_XX, (N, N), tagged positive semidefinite (jitter included).
+        prior_mean: μ_f, shape (N,).
         log_likelihood: f ↦ (log p(yₙ ∣ fₙ))ₙ, one log-density per site; site
             n must depend on fₙ alone.
         max_iter: Maximum iterations.
-        tol: Absolute tolerance on max |Δf|.
+        tol: Absolute tolerance on ‖Δf‖_∞.
         damping: Step size α in (0, 1].
-        precision_floor: The floor on Λ; raise it (pyrox-gp's
+        precision_floor: The floor on Λ_site; raise it (pyrox-gp's
             ``GaussNewtonInference`` uses 1e-3) for non-log-concave
             likelihoods.
 
@@ -598,7 +610,7 @@ def laplace_mode_covariance(
         target = _covariance_update(
             latent, frozen_cov, frozen_mean, frozen_likelihood, precision_floor
         )
-        # f ← (1 − α) f + α f̃
+        # f ← (1 − α) f + α f_Newton
         damped = (1.0 - damping) * latent + damping * target
         return damped, carry
 
@@ -615,20 +627,21 @@ def laplace_mode_covariance(
     )
     regularised = _regularised(prior_cov, precision)
     variance = _marginal_variance(prior_cov, regularised)
-    # f̂ − μ
+    # f̂ − μ_f
     residual = mode - prior_mean
-    # K⁻¹ (f̂ − μ)
+    # K_XX⁻¹ (f̂ − μ_f)
     whitened = gx.solve(prior_cov, residual)
-    # ½ (f̂ − μ)ᵀ K⁻¹ (f̂ − μ)
+    # ½ (f̂ − μ_f)ᵀ K_XX⁻¹ (f̂ − μ_f)
     quadratic = 0.5 * einx.dot("state, state ->", residual, whitened)
-    # ∑ₙ log Λₙ
+    # ∑ₙ log Λ_site,n
     log_site_precision = einx.sum("state ->", jnp.log(precision))
-    # log |I + √Λ K √Λ| = log |K + Λ⁻¹| + ∑ₙ log Λₙ
+    # log |I + Λ_site^½ K_XX Λ_site^½| = log |K_XX + Λ_site⁻¹| + ∑ₙ log Λ_site,n
     log_det = gx.logdet(regularised) + log_site_precision
     site_log_densities = log_likelihood(mode)
     # ∑ₙ log p(yₙ ∣ f̂ₙ)
     log_density = einx.sum("state ->", site_log_densities)
-    # ∑ₙ log p(yₙ ∣ f̂ₙ) − ½ (f̂ − μ)ᵀ K⁻¹ (f̂ − μ) − ½ log |I + √Λ K √Λ|
+    # ∑ₙ log p(yₙ ∣ f̂ₙ) − ½ (f̂ − μ_f)ᵀ K_XX⁻¹ (f̂ − μ_f)
+    #   − ½ log |I + Λ_site^½ K_XX Λ_site^½|
     log_marginal = log_density - quadratic - 0.5 * log_det
     return CovarianceLaplaceResult(
         mode=mode,
@@ -646,10 +659,10 @@ def laplace_mode_covariance(
 def _regularised(
     prior_cov: lx.AbstractLinearOperator, precision: Float[Array, " state"]
 ) -> lx.AbstractLinearOperator:
-    """K + Λ⁻¹, tagged positive semidefinite."""
-    # Λ⁻¹
+    """K_XX + Λ_site⁻¹, tagged positive semidefinite."""
+    # Λ_site⁻¹
     site_variance = lx.DiagonalLinearOperator(1.0 / precision)
-    # K + Λ⁻¹
+    # K_XX + Λ_site⁻¹
     untagged = prior_cov + site_variance
     return lx.TaggedLinearOperator(untagged, _PSD)
 
@@ -661,37 +674,40 @@ def _covariance_update(
     log_likelihood: Callable[[Float[Array, " state"]], Float[Array, " state"]],
     precision_floor: float,
 ) -> Float[Array, " state"]:
-    """One undamped update f ↦ μ + K (K + Λ⁻¹)⁻¹ (λ/Λ − μ), the sites at f."""
+    """One undamped update f ↦ μ_f + K_XX (K_XX + Λ_site⁻¹)⁻¹ (μ_site − μ_f)."""
     information, precision = _sites(log_likelihood, latent, precision_floor)
-    # ỹ = λ / Λ
+    # μ_site = Λμ_site / Λ_site, the sites at f as a Gaussian pseudo-target
     pseudo_target = information / precision
     regularised = _regularised(prior_cov, precision)
-    # (K + Λ⁻¹)⁻¹ (ỹ − μ)
+    # (K_XX + Λ_site⁻¹)⁻¹ (μ_site − μ_f)
     weights = gx.solve(regularised, pseudo_target - prior_mean)
-    # K (K + Λ⁻¹)⁻¹ (ỹ − μ)
+    # K_XX (K_XX + Λ_site⁻¹)⁻¹ (μ_site − μ_f)
     shift = prior_cov.mv(weights)
-    # μ + K (K + Λ⁻¹)⁻¹ (ỹ − μ)
+    # μ_f + K_XX (K_XX + Λ_site⁻¹)⁻¹ (μ_site − μ_f)
     return prior_mean + shift
 
 
 def _marginal_variance(
     prior_cov: lx.AbstractLinearOperator, regularised: lx.AbstractLinearOperator
 ) -> Float[Array, " state"]:
-    """diag(V) = diag(K) − diag(K (K + Λ⁻¹)⁻¹ K), one solve per site."""
+    """diag(Σ_f∣y) = diag(K_XX) − diag(K_XX (K_XX + Λ_site⁻¹)⁻¹ K_XX).
+
+    One solve per site.
+    """
     structure = prior_cov.in_structure()
     identity = jnp.eye(structure.shape[0], dtype=structure.dtype)
 
     def column_term(basis: Array) -> Array:
-        # kₙ = K eₙ
+        # kₙ = K_XX eₙ, the n-th column
         column = prior_cov.mv(basis)
-        # (K + Λ⁻¹)⁻¹ kₙ
+        # (K_XX + Λ_site⁻¹)⁻¹ kₙ
         solved = gx.solve(regularised, column)
-        # kₙᵀ (K + Λ⁻¹)⁻¹ kₙ
+        # kₙᵀ (K_XX + Λ_site⁻¹)⁻¹ kₙ
         return einx.dot("state, state ->", column, solved)
 
-    # diag(K (K + Λ⁻¹)⁻¹ K)
+    # diag(K_XX (K_XX + Λ_site⁻¹)⁻¹ K_XX)
     reduction = jax.vmap(column_term)(identity)
-    # diag(K) − diag(K (K + Λ⁻¹)⁻¹ K)
+    # diag(K_XX) − diag(K_XX (K_XX + Λ_site⁻¹)⁻¹ K_XX)
     return gx.diag(prior_cov) - reduction
 
 
@@ -709,32 +725,36 @@ def laplace_mode_sites(
 ) -> SiteLaplaceResult:
     """Laplace approximation by damping the site naturals, given a posterior-mean map.
 
-        (λ, Λ) ← (1 − α) (λ, Λ) + α newton_update(f),   f ← m(λ, Λ)
+        (Λμ_site, Λ_site) ← (1 − α) (Λμ_site, Λ_site) + α newton_update(f)
+        f ← μ_f∣y(Λμ_site, Λ_site)
 
     ``posterior_mean`` maps site naturals to the posterior mean under the
     Gaussian pseudo-likelihood they define, for whatever prior the caller has:
-    for a Markov GP, a Kalman filter and RTS smoother in O(N d³), which stays
-    with the caller. This is the loop of pyrox-gp's ``LaplaceMarkovInference``
-    and ``GaussNewtonMarkovInference``, as a ``lax.while_loop``: it damps the
-    naturals (`gaussx.damped_natural_update`) rather than the mean.
+    for a Markov GP, a Kalman filter and RTS smoother in O(N D_x³), with D_x
+    the size of the SDE state, which stays with the caller. Here f ∈ ℝ^N are
+    the latent values at the N inputs, with prior mean μ_f. This is the loop of
+    pyrox-gp's ``LaplaceMarkovInference`` and ``GaussNewtonMarkovInference``,
+    as a ``lax.while_loop``: it damps the naturals
+    (`gaussx.damped_natural_update`) rather than the mean.
 
     Algorithm:
-        1. Start from f = μ, λ = floor μ and Λ = floor.
-        2. Iterate: the Newton sites at f, a damped natural update, Λ floored,
-           and f from ``posterior_mean``, until max |Δf| < tol (floored at 64
-           machine epsilons) or ``max_iter``.
-        3. Make the mode implicit through its fixed point f̂ = m(sites(f̂)),
+        1. Start from f = μ_f, Λμ_site = floor · μ_f and Λ_site = floor.
+        2. Iterate: the Newton sites at f, a damped natural update, Λ_site
+           floored, and f from ``posterior_mean``, until ‖Δf‖_∞ < tol (floored
+           at 64 machine epsilons) or ``max_iter``.
+        3. Make the mode implicit through its fixed point
+           f̂ = μ_f∣y(sites(f̂)),
            and return the undamped sites at f̂.
 
     Args:
-        posterior_mean: (λ, Λ) ↦ m, the posterior mean given site naturals,
-            each of shape (N,).
+        posterior_mean: (Λμ_site, Λ_site) ↦ μ_f∣y, the posterior mean given
+            the site naturals, each of shape (N,).
         log_likelihood: f ↦ (log p(yₙ ∣ fₙ))ₙ, one log-density per site.
-        prior_mean: μ, shape (N,).
+        prior_mean: μ_f, shape (N,).
         max_iter: Maximum iterations.
-        tol: Absolute tolerance on max |Δf|.
+        tol: Absolute tolerance on ‖Δf‖_∞.
         damping: Step size α in (0, 1] on the naturals.
-        precision_floor: The floor on Λ.
+        precision_floor: The floor on Λ_site.
 
     Returns:
         The `SiteLaplaceResult`: the mode and the sites at it, from which the
@@ -753,7 +773,7 @@ def laplace_mode_sites(
         >>> def log_likelihood(f):
         ...     return labels * f - jax.nn.softplus(f)
         >>> def posterior_mean(information, precision):
-        ...     # m = (μ + λ) / (1 + Λ) for μ = 0 and unit prior variance
+        ...     # μ_f∣y = Λμ_site / (1 + Λ_site) for μ_f = 0 and unit variance
         ...     return information / (1.0 + precision)
         >>> fit = laplace_mode_sites(posterior_mean, log_likelihood, jnp.zeros(2))
         >>> bool(fit.converged), fit.mode.shape
@@ -780,9 +800,9 @@ def laplace_mode_sites(
 
     def fixed_point(latent: Array) -> Array:
         information, precision = _sites(log_likelihood, latent, precision_floor)
-        # Λ ← max(Λ, floor)
+        # Λ_site ← max(Λ_site, floor)
         floored_precision = jnp.maximum(precision, precision_floor)
-        # m(λ, Λ)
+        # μ_f∣y(Λμ_site, Λ_site)
         return posterior_mean(information, floored_precision)
 
     # --- the loop, with gradients stopped ---
@@ -798,7 +818,7 @@ def laplace_mode_sites(
         target_information, target_precision = _sites(
             frozen_likelihood, latent, precision_floor
         )
-        # (λ, Λ) ← (1 − α) (λ, Λ) + α (λ̃, Λ̃)
+        # (Λμ_site, Λ_site) ← (1 − α) (Λμ_site, Λ_site) + α newton_update(f)
         information, precision = gx.damped_natural_update(
             current_information,
             current_precision,
@@ -808,14 +828,14 @@ def laplace_mode_sites(
         )
         # diagonal sites in, diagonal sites out (gaussx types the operator form too)
         diagonal_precision = cast(Array, precision)
-        # Λ ← max(Λ, floor)
+        # Λ_site ← max(Λ_site, floor)
         floored_precision = jnp.maximum(diagonal_precision, precision_floor)
-        # f ← m(λ, Λ)
+        # f ← μ_f∣y(Λμ_site, Λ_site)
         next_latent = frozen_mean(information, floored_precision)
         return next_latent, (information, floored_precision)
 
     start_mean = jax.lax.stop_gradient(prior_mean)
-    # λ⁽⁰⁾ = floor μ, Λ⁽⁰⁾ = floor
+    # Λμ_site⁽⁰⁾ = floor · μ_f, Λ_site⁽⁰⁾ = floor
     start_sites = (
         start_mean * precision_floor,
         jnp.full_like(start_mean, precision_floor),
@@ -828,7 +848,7 @@ def laplace_mode_sites(
 
     # --- the undamped sites at f̂ ---
     information, precision = _sites(log_likelihood, mode, precision_floor)
-    # Λ ← max(Λ, floor)
+    # Λ_site ← max(Λ_site, floor)
     floored_precision = jnp.maximum(precision, precision_floor)
     return SiteLaplaceResult(
         mode=mode,

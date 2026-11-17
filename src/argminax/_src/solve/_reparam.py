@@ -35,14 +35,16 @@ class Reparametrised(eqx.Module):
                     softplus:  x = a + log(1 + exp(u))
                     sigmoid:  x = a + (b − a) / (1 + exp(−u))
 
-    a is ``lower`` (default 0 for ``exp`` and ``softplus``) and b is
-    ``upper``, needed by ``sigmoid`` only. Write the cost in u (the residuals
-    call `forward` on it), solve and build the posterior in u, then report it
-    in x with `push_forward` or `sample`. The two differ where it matters:
-    `push_forward` is the linearisation Ŝₓ ≈ G Ŝᵤ Gᵀ with G = diag(g′(û)),
-    which fails where g′ varies across the posterior width, that is near the
-    bound; `sample` maps draws in u through g, which stays exact for the
-    Gaussian in u and never crosses the bound, so prefer it there. An
+    u has the shape of the state x, and is the control the solver iterates
+    on; a is ``lower`` (default 0 for ``exp`` and ``softplus``) and b is
+    ``upper``, needed by ``sigmoid`` only. Write the cost 𝒥 in u (the
+    residuals call `forward` on it), solve and build the posterior in u, then
+    report it in x with `push_forward` or `sample`. The two differ where it
+    matters: `push_forward` is the linearisation Σ_x∣y ≈ J_g Σ_u∣y J_gᵀ with
+    the Jacobian J_g = diag(g′(û)), which fails where g′ varies across the
+    posterior width, that is near the bound; `sample` maps draws in u through
+    g, which stays exact for the Gaussian in u and never crosses the bound, so
+    prefer it there. An
     averaging kernel or degrees of freedom computed from the posterior in u
     are those of u, not of x.
 
@@ -131,30 +133,31 @@ class Reparametrised(eqx.Module):
     def inverse(self, x: Float[Array, "*state"]) -> Float[Array, "*state"]:
         """Map the bounded state x back to u = g⁻¹(x)."""
         offset = self._offset()
-        # s = x − a
+        # x − a
         shifted = x - offset
         if self.transform == "exp":
             # u = log(x − a)
             return jnp.log(shifted)
         if self.transform == "softplus":
-            # 1 − exp(−s), by expm1 so it keeps its digits for small s
+            # 1 − exp(−(x − a)), by expm1 so it keeps its digits near the bound
             complement = -jnp.expm1(-shifted)
-            # u = log(exp(s) − 1) = s + log(1 − exp(−s)), stable for large s
+            # u = log(exp(x − a) − 1) = (x − a) + log(1 − exp(−(x − a))), stable
+            # far from the bound
             return shifted + jnp.log(complement)
         assert self.upper is not None
         # b − a
         width = self.upper - offset
-        # p = (x − a)/(b − a)
+        # the fraction (x − a)/(b − a)
         fraction = shifted / width
-        # log p
+        # log((x − a)/(b − a))
         log_fraction = jnp.log(fraction)
-        # log(1 − p)
+        # log(1 − (x − a)/(b − a))
         log_complement = jnp.log1p(-fraction)
-        # u = logit(p) = log p − log(1 − p)
+        # u = logit((x − a)/(b − a))
         return log_fraction - log_complement
 
     def derivative(self, u: Float[Array, "*state"]) -> Float[Array, "*state"]:
-        """Return g′(u), the diagonal of G = ∂x/∂u."""
+        """Return g′(u), the diagonal of the Jacobian J_g = ∂x/∂u."""
         if self.transform == "exp":
             # g′(u) = exp(u)
             return jnp.exp(u)
@@ -172,19 +175,20 @@ class Reparametrised(eqx.Module):
     def push_forward(self, posterior: Laplace) -> Laplace:
         """Linearise a posterior in u into one in x.
 
-            x̂ = g(û),   Ŝₓ ≈ G Ŝᵤ Gᵀ,   Ĥₓ = G⁻ᵀ Ĥᵤ G⁻¹,   G = diag(g′(û))
+            x̂ = g(û),   Λ_x∣y = J_g⁻ᵀ Λ_u∣y J_g⁻¹,   J_g = diag(g′(û))
 
-        Accurate only where g′ is nearly constant across the posterior width;
-        near the bound, use `sample`.
+        so that Σ_x∣y ≈ J_g Σ_u∣y J_gᵀ, with Λ_u∣y the posterior precision in
+        u and Λ_x∣y the one in x. Accurate only where g′ is nearly constant
+        across the posterior width; near the bound, use `sample`.
 
         Args:
-            posterior: The posterior N(û, Ĥᵤ⁻¹) in u.
+            posterior: The posterior 𝒩(û, Λ_u∣y⁻¹) in u.
 
         Returns:
             The linearised posterior in x, with the same solver strategy.
 
         Examples:
-            At û = 0 the softplus slope is g′(0) = ½, so Ĥₓ = 4 Ĥᵤ:
+            At û = 0 the softplus slope is g′(0) = ½, so Λ_x∣y = 4 Λ_u∣y:
 
             >>> import jax.numpy as jnp
             >>> import lineax as lx
@@ -200,17 +204,17 @@ class Reparametrised(eqx.Module):
             >>> bool(jnp.allclose(physical.precision.as_matrix(), 4.0 * jnp.eye(2)))
             True
         """
-        # g′(û), the diagonal of G
+        # g′(û), the diagonal of J_g
         slope = self.derivative(posterior.mode)
 
         def physical_precision(
             vector: Float[Array, "*state"],
         ) -> Float[Array, "*state"]:
-            # G⁻¹ v
+            # J_g⁻¹ v
             whitened = vector / slope
-            # Ĥᵤ G⁻¹ v
+            # Λ_u∣y J_g⁻¹ v
             curved = posterior.precision.mv(whitened)
-            # G⁻ᵀ Ĥᵤ G⁻¹ v
+            # J_g⁻ᵀ Λ_u∣y J_g⁻¹ v
             return curved / slope
 
         structure = posterior.precision.in_structure()
@@ -227,12 +231,12 @@ class Reparametrised(eqx.Module):
         Exact for the Gaussian in u, and every draw respects the bound.
 
         Args:
-            posterior: The posterior N(û, Ĥᵤ⁻¹) in u.
+            posterior: The posterior 𝒩(û, Λ_u∣y⁻¹) in u.
             n: Number of draws.
             key: Random key.
 
         Returns:
-            The draws in x, shape (n, *x̂.shape).
+            The draws x⁽ᵉ⁾ in x, shape (n, *x̂.shape).
 
         Examples:
             Every draw of a positive state stays positive, however wide the
@@ -255,7 +259,7 @@ class Reparametrised(eqx.Module):
             >>> bool(jnp.all(draws > 0.0))
             True
         """
-        # u⁽ᵉ⁾ ~ N(û, Ĥᵤ⁻¹)
+        # u⁽ᵉ⁾ ~ 𝒩(û, Λ_u∣y⁻¹)
         unconstrained = posterior.sample(n, key=key)
         # x⁽ᵉ⁾ = g(u⁽ᵉ⁾)
         return self.forward(unconstrained)

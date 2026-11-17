@@ -21,7 +21,7 @@ __all__ = [
 
 
 type Objective = Callable[[PyTree[Array], Any], Float[Array, ""]]
-"""A scalar cost J(x, args), the ``fn`` of ``optx.minimise``."""
+"""A scalar cost 𝒥(x; args), the ``fn`` of ``optx.minimise``."""
 
 type Residuals = Callable[[PyTree[Array], Any], PyTree[Array]]
-"""Residuals r(x, args) with J = ½ ‖r‖², the ``fn`` of ``optx.least_squares``."""
+"""Residuals r(x; args) with 𝒥 = ½ ‖r‖², the ``fn`` of ``optx.least_squares``."""
