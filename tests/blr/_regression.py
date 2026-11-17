@@ -7,6 +7,8 @@ test runs argminax on exactly what optax_bayes saw.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -56,3 +58,8 @@ def run(optimiser, params, cost, to_flat=lambda p: p, *, pass_params=False):
         params = optax.apply_updates(params, updates)
         iterates.append(np.asarray(to_flat(params)))
     return np.stack(iterates), state
+
+
+#: optax_bayes's iterates and posteriors, and the problem they were recorded on
+REFERENCE = np.load(Path(__file__).parent / "data" / "optax_bayes.npz")
+REGRESSION = Regression(REFERENCE)

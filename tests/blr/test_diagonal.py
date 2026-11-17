@@ -12,33 +12,33 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 import pytest
-from _regression import run
+from _regression import REFERENCE, REGRESSION, run
 from hypothesis import given, settings, strategies as st
 
 from argminax import MissingExtraError, ValidationError
 from argminax.blr import BLRDiagonalState, blr_diagonal
 
 
-def test_ggn_reproduces_optax_bayes(reference, regression) -> None:
+def test_ggn_reproduces_optax_bayes() -> None:
     optimiser = blr_diagonal(0.05, prior_precision=0.5, prior_mean=0.1, damping=1e-6)
-    start = regression.tree(regression.start)
-    iterates, _ = run(optimiser, start, regression.tree_cost, regression.flat)
-    np.testing.assert_allclose(iterates, reference["diag_ggn"], rtol=1e-10)
+    start = REGRESSION.tree(REGRESSION.start)
+    iterates, _ = run(optimiser, start, REGRESSION.tree_cost, REGRESSION.flat)
+    np.testing.assert_allclose(iterates, REFERENCE["diag_ggn"], rtol=1e-10)
 
 
-def test_identity_reproduces_optax_bayes(reference, regression) -> None:
+def test_identity_reproduces_optax_bayes() -> None:
     optimiser = blr_diagonal(0.01, prior_precision=2.0, curvature="identity")
-    start = regression.tree(regression.start)
-    iterates, _ = run(optimiser, start, regression.tree_cost, regression.flat)
-    np.testing.assert_allclose(iterates, reference["diag_identity"], rtol=1e-10)
+    start = REGRESSION.tree(REGRESSION.start)
+    iterates, _ = run(optimiser, start, REGRESSION.tree_cost, REGRESSION.flat)
+    np.testing.assert_allclose(iterates, REFERENCE["diag_identity"], rtol=1e-10)
 
 
-def test_schedule_reproduces_optax_bayes(reference, regression) -> None:
+def test_schedule_reproduces_optax_bayes() -> None:
     schedule = optax.exponential_decay(0.05, transition_steps=10, decay_rate=0.5)
     optimiser = blr_diagonal(schedule, prior_precision=0.5, prior_mean=0.1)
-    start = regression.tree(regression.start)
-    iterates, _ = run(optimiser, start, regression.tree_cost, regression.flat)
-    np.testing.assert_allclose(iterates, reference["diag_schedule"], rtol=1e-10)
+    start = REGRESSION.tree(REGRESSION.start)
+    iterates, _ = run(optimiser, start, REGRESSION.tree_cost, REGRESSION.flat)
+    np.testing.assert_allclose(iterates, REFERENCE["diag_schedule"], rtol=1e-10)
 
 
 def test_one_step_matches_the_update_equations() -> None:
@@ -60,26 +60,24 @@ def test_one_step_matches_the_update_equations() -> None:
     assert int(state.count) == 1
 
 
-def test_identity_converges_to_the_stationary_point_of_cost_plus_prior(
-    regression,
-) -> None:
+def test_identity_converges_to_the_stationary_point_of_cost_plus_prior() -> None:
     delta, prior_mean = 2.0, 0.1
     optimiser = blr_diagonal(
         0.02, prior_precision=delta, prior_mean=prior_mean, curvature="identity"
     )
-    theta = regression.start
+    theta = REGRESSION.start
     state = optimiser.init(theta)
 
     def step(carry, _):
         theta, state = carry
-        updates, state = optimiser.update(jax.grad(regression.cost)(theta), state)
+        updates, state = optimiser.update(jax.grad(REGRESSION.cost)(theta), state)
         return (theta + updates, state), None
 
     (theta, _), _ = jax.lax.scan(step, (theta, state), length=4000)
     # (XᵀX + δ I) θ* = Xᵀy + δ μ₀
-    gram = regression.inputs.T @ regression.inputs + delta * jnp.eye(4)
+    gram = REGRESSION.inputs.T @ REGRESSION.inputs + delta * jnp.eye(4)
     expected = jnp.linalg.solve(
-        gram, regression.inputs.T @ regression.targets + delta * prior_mean
+        gram, REGRESSION.inputs.T @ REGRESSION.targets + delta * prior_mean
     )
     np.testing.assert_allclose(theta, expected, rtol=1e-8)
 
@@ -98,16 +96,16 @@ def test_chains_with_clipping_on_a_nested_pytree() -> None:
     assert all(jnp.all(jnp.isfinite(leaf)) for leaf in jax.tree.leaves(updates))
 
 
-def test_jit_and_scan_agree_with_an_eager_loop(regression) -> None:
+def test_jit_and_scan_agree_with_an_eager_loop() -> None:
     optimiser = blr_diagonal(0.05, prior_precision=0.5)
-    start = regression.tree(regression.start)
-    eager, _ = run(optimiser, start, regression.tree_cost, regression.flat)
+    start = REGRESSION.tree(REGRESSION.start)
+    eager, _ = run(optimiser, start, REGRESSION.tree_cost, REGRESSION.flat)
 
     def step(carry, _):
         params, state = carry
-        updates, state = optimiser.update(jax.grad(regression.tree_cost)(params), state)
+        updates, state = optimiser.update(jax.grad(REGRESSION.tree_cost)(params), state)
         params = optax.apply_updates(params, updates)
-        return (params, state), regression.flat(params)
+        return (params, state), REGRESSION.flat(params)
 
     _, scanned = jax.jit(
         lambda carry: jax.lax.scan(step, carry, length=eager.shape[0])
