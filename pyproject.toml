@@ -23,6 +23,7 @@ classifiers = [
 # the private layout of its solve inputs; gaussx comes by git tag, as
 # elsewhere in the stack.
 dependencies = [
+    "einx>=0.4.3",
     "equinox>=0.13.8",
     "gaussx @ git+https://github.com/jejjohnson/gaussx@v0.6.13",
     "jax>=0.10",

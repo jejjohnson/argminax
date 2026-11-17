@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+import einx
 import equinox as eqx
 import gaussx as gx
 import jax
@@ -52,13 +53,13 @@ class VarianceEstimate(eqx.Module):
         stderr: The standard error of each entry, shape (N,).
     """
 
-    estimate: Float[Array, " N"]
-    stderr: Float[Array, " N"]
+    estimate: Float[Array, " state"]
+    stderr: Float[Array, " state"]
 
 
 def marginal_variance(
     posterior: Laplace, *, num_probes: int = 64, key: PRNGKeyArray | None = None
-) -> VarianceEstimate | Float[Array, " N"]:
+) -> VarianceEstimate | Float[Array, " state"]:
     """Return the marginal variances diag(Ŝ) of a Laplace posterior.
 
         diag(Ŝ) ≈ (1/K) ∑ₖ zₖ ⊙ Ŝ zₖ,   zₖ Rademacher
@@ -69,6 +70,11 @@ def marginal_variance(
     standard error of the K probes. A solve stopped at a loose tolerance
     biases every probe the same way, so set the solver's tolerance below the
     standard error you need.
+
+    Algorithm:
+        1. Without a key: diag(Ŝ) exactly, by one solve with Ĥ per unknown.
+        2. With a key: draw K Rademacher probes zₖ, form zₖ ⊙ Ĥ⁻¹ zₖ by one
+           solve each, and return their mean and its standard error.
 
     Args:
         posterior: The posterior N(x̂, Ĥ⁻¹).
@@ -106,16 +112,29 @@ def marginal_variance(
         return gx.diag_inv(posterior.precision, method="solve", solver=posterior.solver)
     _require_count(num_probes, "num_probes", minimum=2)
     size = jnp.shape(posterior.mode)[0]
+    # zₖ Rademacher, one row per probe
     probes = jax.random.rademacher(key, (num_probes, size), posterior.mode.dtype)
 
-    def probe_term(probe: Float[Array, " N"]) -> Float[Array, " N"]:
-        # z ⊙ Ŝ z, with Ŝ z = Ĥ⁻¹ z by one solve
-        return probe * posterior.solver.solve(posterior.precision, probe)
+    def probe_term(probe: Float[Array, " state"]) -> Float[Array, " state"]:
+        # Ŝ z = Ĥ⁻¹ z, by one solve
+        covariance_probe = posterior.solver.solve(posterior.precision, probe)
+        # z ⊙ Ŝ z
+        return probe * covariance_probe
 
     terms = jax.vmap(probe_term)(probes)
-    # the standard error of the mean of K probe terms
-    stderr = jnp.std(terms, axis=0, ddof=1) / jnp.sqrt(num_probes)
-    return VarianceEstimate(estimate=jnp.mean(terms, axis=0), stderr=stderr)
+
+    # --- mean and standard error over the K probes ---
+    # diag(Ŝ) ≈ (1/K) ∑ₖ zₖ ⊙ Ŝ zₖ
+    estimate = einx.mean("member state -> state", terms)
+    # tₖ − t̄
+    deviations = einx.subtract("member state, state -> member state", terms, estimate)
+    # ∑ₖ (tₖ − t̄)²
+    squared_deviations = einx.sum("member state -> state", deviations**2)
+    # s² = ∑ₖ (tₖ − t̄)² / (K − 1), the unbiased sample variance
+    sample_variance = squared_deviations / (num_probes - 1)
+    # SE = s / √K
+    stderr = jnp.sqrt(sample_variance) / jnp.sqrt(num_probes)
+    return VarianceEstimate(estimate=estimate, stderr=stderr)
 
 
 def low_rank(posterior: Laplace, rank: int, *, key: PRNGKeyArray) -> gx.LowRankUpdate:
@@ -179,10 +198,12 @@ def low_rank(posterior: Laplace, rank: int, *, key: PRNGKeyArray) -> gx.LowRankU
     if rank > size:
         msg = f"'rank' must be at most the state size {size}, got {rank}"
         raise ValidationError(msg)
+    # the R largest eigenpairs (μᵢ, vᵢ) of Ĥ, from products with Ĥ only
     eigenvalues, eigenvectors = gx.randomized_eigh(posterior.precision, rank, key=key)
     # dᵢ = −(μᵢ − 1)/μᵢ, the variance the data removed along vᵢ
     removed = -(eigenvalues - 1.0) / eigenvalues
     identity = lx.IdentityLinearOperator(posterior.precision.in_structure())
+    # Ŝ ≈ I + V diag(dᵢ) Vᵀ
     return gx.LowRankUpdate(
         identity,
         eigenvectors,
@@ -193,13 +214,13 @@ def low_rank(posterior: Laplace, rank: int, *, key: PRNGKeyArray) -> gx.LowRankU
 
 
 def sample_by_perturbation(
-    residuals: Callable[[Float[Array, " N"], Any], PyTree[Array]],
+    residuals: Callable[[Float[Array, " state"], Any], PyTree[Array]],
     posterior: Laplace,
     n: int,
     args: Any = None,
     *,
     key: PRNGKeyArray,
-) -> Float[Array, "n N"]:
+) -> Float[Array, " member state"]:
     """Draw from a Gauss–Newton posterior by perturbing its residuals.
 
         Ĥ δ = J_rᵀ z,   z ~ N(0, I_M),   Cov(δ) = Ĥ⁻¹ J_rᵀ J_r Ĥ⁻¹ = Ĥ⁻¹
@@ -209,6 +230,11 @@ def sample_by_perturbation(
     because the prior rows are part of J_r, so Ĥ = J_rᵀ J_r: ``posterior``
     must come from `gauss_newton` on the same ``residuals`` and ``args``. An
     inexact solve biases every draw; set the solver's tolerance accordingly.
+
+    Algorithm:
+        1. Linearise the residuals at x̂ once, keeping the pullback v ↦ J_rᵀ v.
+        2. For each draw, z ~ N(0, I_M), then δ = Ĥ⁻¹ J_rᵀ z by one pullback
+           and one solve, and return x̂ + δ.
 
     Args:
         residuals: The whitened residuals r(x, args) the posterior was built
@@ -245,16 +271,23 @@ def sample_by_perturbation(
     """
     _require_count(n, "n", minimum=1)
 
-    def flat_residuals(state: Float[Array, " N"]) -> Float[Array, " M"]:
-        return ravel_pytree(residuals(state, args))[0]
+    def flat_residuals(state: Float[Array, " state"]) -> Float[Array, " residual"]:
+        residual_tree = residuals(state, args)
+        flat, _ = ravel_pytree(residual_tree)
+        return flat
 
-    measurements, pullback = jax.vjp(flat_residuals, posterior.mode)
-    noise = jax.random.normal(key, (n, measurements.shape[0]), measurements.dtype)
+    # r(x̂), and the pullback v ↦ J_rᵀ v at x̂
+    residual_at_mode, pullback = jax.vjp(flat_residuals, posterior.mode)
+    residual_size = residual_at_mode.shape[0]
+    # z ~ N(0, I_M), one row per draw
+    noise = jax.random.normal(key, (n, residual_size), residual_at_mode.dtype)
 
-    def perturbation(standard: Float[Array, " M"]) -> Float[Array, " N"]:
+    def perturbation(standard: Float[Array, " residual"]) -> Float[Array, " state"]:
         # J_rᵀ z
         (pulled,) = pullback(standard)
         # δ = Ĥ⁻¹ J_rᵀ z
         return posterior.solver.solve(posterior.precision, pulled)
 
-    return posterior.mode + jax.vmap(perturbation)(noise)
+    perturbations = jax.vmap(perturbation)(noise)
+    # x = x̂ + δ
+    return posterior.mode + perturbations

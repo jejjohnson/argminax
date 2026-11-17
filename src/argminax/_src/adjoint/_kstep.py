@@ -37,6 +37,7 @@ _INPUTS_LENGTH = 9
 
 
 def _is_static(leaf: Any) -> bool:
+    """Whether a leaf is optimistix's ``Static`` wrapper around a structure."""
     return isinstance(leaf, eqxi.Static)
 
 
@@ -58,8 +59,11 @@ def _proposes_next_iterate(inputs: tuple[Any, ...]) -> bool:
     def unwrap(tree: PyTree) -> PyTree:
         return jtu.tree_map(lambda leaf: leaf.value, tree, is_leaf=_is_static)
 
+    output_struct = unwrap(f_struct)
+    auxiliary_struct = unwrap(aux_struct)
+    # shapes only: the solver's state is never built, only inspected
     state = eqx.filter_eval_shape(
-        solver.init, fn, y0, args, options, unwrap(f_struct), unwrap(aux_struct), tags
+        solver.init, fn, y0, args, options, output_struct, auxiliary_struct, tags
     )
     return hasattr(state, "y_eval")
 
@@ -182,12 +186,16 @@ class KStep(optx.AbstractAdjoint):
         """
         del rewrite_fn, tags
         # --- how many solver steps hold the last k updates ---
-        lag = int(_proposes_next_iterate(inputs))
+        proposes_next = _proposes_next_iterate(inputs)
+        # one extra step when each update spans two (the search-based solvers)
+        lag = int(proposes_next)
+        # w = k + lag solver steps hold the last k updates
         window = self.k + lag
 
         # --- the solve, under stop_gradient, buffering the last carries ---
         dynamic, static = eqx.partition(inputs, eqx.is_inexact_array)
-        frozen_inputs = eqx.combine(jax.lax.stop_gradient(dynamic), static)
+        frozen_dynamic = jax.lax.stop_gradient(dynamic)
+        frozen_inputs = eqx.combine(frozen_dynamic, static)
         recorded: dict[str, Any] = {}
 
         def recording_loop(
@@ -218,8 +226,9 @@ class KStep(optx.AbstractAdjoint):
                 )
                 return body_fun(carry), buffer, steps + 1
 
+            initial = (init_carry, buffer, jnp.array(0))
             final_carry, buffer, steps = jax.lax.while_loop(
-                keep_going, record_and_step, (init_carry, buffer, jnp.array(0))
+                keep_going, record_and_step, initial
             )
             recorded["buffer"] = buffer
             recorded["steps"] = steps
@@ -238,13 +247,14 @@ class KStep(optx.AbstractAdjoint):
             # y0 keeps its gradient; otherwise the carry entering step
             # T − window sits in slot T mod window
             from_start = steps < window
+            # the carry entering step T − w sits in slot T mod w
+            start_slot = steps % window
             carry = jtu.tree_map(
-                lambda live, stored: jnp.where(
-                    from_start, live, stored[steps % window]
-                ),
+                lambda live, stored: jnp.where(from_start, live, stored[start_slot]),
                 init_carry,
                 buffer,
             )
+            # min(T, w) steps to replay
             replayed = jnp.minimum(steps, window)
             for index in range(window):
                 carry = jax.lax.cond(

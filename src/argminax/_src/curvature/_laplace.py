@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, Literal
 
+import einx
 import equinox as eqx
 import gaussx as gx
 import jax
@@ -173,7 +174,7 @@ class Laplace(eqx.Module):
             return self.solver.logdet(self.precision)
         return gx.logdet(self.precision)
 
-    def sample(self, n: int, *, key: PRNGKeyArray) -> Float[Array, "n ..."]:
+    def sample(self, n: int, *, key: PRNGKeyArray) -> Float[Array, " member *state"]:
         """Draw samples from N(x̂, Ŝ) by a Cholesky factor of the precision.
 
             x = x̂ + L⁻ᵀ z,   Ĥ = L Lᵀ,   z ~ N(0, I)
@@ -191,22 +192,31 @@ class Laplace(eqx.Module):
         """
         # Ĥ = L Lᵀ over the flattened state, densifying a matrix-free precision
         factor = gx.cholesky(self.precision)
+        # Lᵀ, an operator, so the solve below stays triangular
         upper = factor.T
         size = jnp.size(self.mode)
+        # z ~ N(0, I), one row per draw
         noise = jax.random.normal(key, (n, size), self.mode.dtype)
 
-        def whitened_draw(standard: Float[Array, " size"]) -> Float[Array, "*state"]:
-            # L⁻ᵀ z, by a triangular solve with Lᵀ
+        def whitened_draw(
+            standard: Float[Array, " state"],
+        ) -> Float[Array, "*state"]:
+            # reshape, not einx: the factor's structure and the mode's shape are
+            # only known at trace time and may have any number of axes
             standard = standard.reshape(upper.in_structure().shape)
-            solved = lx.linear_solve(upper, standard, solver=lx.Triangular()).value
+            # L⁻ᵀ z, by a triangular solve with Lᵀ
+            solution = lx.linear_solve(upper, standard, solver=lx.Triangular())
+            solved = solution.value
             return solved.reshape(jnp.shape(self.mode))
 
-        return self.mode + jax.vmap(whitened_draw)(noise)
+        draws = jax.vmap(whitened_draw)(noise)
+        # x = x̂ + L⁻ᵀ z
+        return self.mode + draws
 
 
 def gauss_newton(
-    residuals: Callable[[Float[Array, " N"], Any], PyTree[Array]],
-    mode: Float[Array, " N"],
+    residuals: Callable[[Float[Array, " state"], Any], PyTree[Array]],
+    mode: Float[Array, " state"],
     args: Any = None,
     *,
     dense: bool | None = None,
@@ -286,33 +296,41 @@ def gauss_newton(
     if jac not in ("fwd", "bwd"):
         msg = f"'jac' must be 'fwd' or 'bwd', got {jac!r}"
         raise ValidationError(msg)
-    use_dense = jnp.shape(mode)[0] <= _DENSE_THRESHOLD if dense is None else dense
+    state_size = jnp.shape(mode)[0]
+    use_dense = state_size <= _DENSE_THRESHOLD if dense is None else dense
 
-    def flat_residuals(state: Float[Array, " N"]) -> Float[Array, " M"]:
-        return ravel_pytree(residuals(state, args))[0]
+    def flat_residuals(state: Float[Array, " state"]) -> Float[Array, " residual"]:
+        residual_tree = residuals(state, args)
+        flat, _ = ravel_pytree(residual_tree)
+        return flat
 
     if not use_dense:
         # Ĥ v = J_rᵀ (J_r v), PSD-tagged by gaussx
         precision = gx.gauss_newton_operator(flat_residuals, mode, jac=jac)
-        # 1e-10 in float64, 100 ε_mach (about 1e-5) in float32
-        tolerance = max(1e-10, 100.0 * float(jnp.finfo(mode.dtype).eps))
+        machine_epsilon = float(jnp.finfo(mode.dtype).eps)
+        # tol = max(10⁻¹⁰, 100 ε_mach): 1e-10 in float64, about 1e-5 in float32
+        tolerance = max(1e-10, 100.0 * machine_epsilon)
         strategy = (
             gx.CGSolver(rtol=tolerance, atol=tolerance) if solver is None else solver
         )
         return Laplace(mode, precision, strategy)
 
     differentiate = jax.jacfwd if jac == "fwd" else jax.jacrev
+    # J_r = ∂r/∂x at x̂
     jacobian = differentiate(flat_residuals)(mode)
-    # Ĥ = J_rᵀ J_r, symmetrised so the PSD tag is exact
-    matrix = gx.symmetrize(jacobian.T @ jacobian)
+    # J_rᵀ J_r
+    gram = einx.dot("residual row, residual col -> row col", jacobian, jacobian)
+    # Ĥ = ½ (J_rᵀ J_r + (J_rᵀ J_r)ᵀ), symmetrised so the PSD tag is exact
+    matrix = gx.symmetrize(gram)
     precision = lx.MatrixLinearOperator(matrix, _PSD_TAGS)
-    return Laplace(mode, precision, gx.DenseSolver() if solver is None else solver)
+    strategy = gx.DenseSolver() if solver is None else solver
+    return Laplace(mode, precision, strategy)
 
 
 def push_forward(
     posterior: Laplace,
     prior_sqrt: lx.AbstractLinearOperator,
-    prior_mean: Float[Array, " N"] | None = None,
+    prior_mean: Float[Array, " state"] | None = None,
 ) -> Laplace:
     """Map a posterior in whitened coordinates back to physical ones.
 
@@ -322,6 +340,11 @@ def push_forward(
     Sₐ = Lₐ Lₐᵀ the physical state is x = xₐ + Lₐ ξ, so the posterior over x
     has mode xₐ + Lₐ ξ̂ and precision Lₐ⁻ᵀ Ĥ Lₐ⁻¹, applied by two solves
     with Lₐ around a product with Ĥ.
+
+    Algorithm:
+        1. Map the mode: x̂ = xₐ + Lₐ ξ̂.
+        2. Apply the precision matrix-free: Hₓ v = Lₐ⁻ᵀ Ĥ Lₐ⁻¹ v, by a solve
+           with Lₐ, a product with Ĥ and a solve with Lₐᵀ.
 
     Args:
         posterior: The posterior over ξ.
@@ -348,17 +371,22 @@ def push_forward(
         >>> bool(jnp.allclose(physical.covariance().as_matrix(), 4.0 / 5.0))
         True
     """
-    # x̂ = xₐ + Lₐ ξ̂
+    # Lₐ ξ̂
     mode = prior_sqrt.mv(posterior.mode)
     if prior_mean is not None:
+        # x̂ = xₐ + Lₐ ξ̂
         mode = prior_mean + mode
+    # Lₐᵀ, an operator, so each solve below stays structured
     transposed_sqrt = prior_sqrt.T
 
-    def physical_precision(vector: Float[Array, " N"]) -> Float[Array, " N"]:
+    def physical_precision(vector: Float[Array, " state"]) -> Float[Array, " state"]:
         # Lₐ⁻¹ v
         whitened = lx.linear_solve(prior_sqrt, vector).value
+        # Ĥ Lₐ⁻¹ v
+        curved = posterior.precision.mv(whitened)
         # Lₐ⁻ᵀ Ĥ Lₐ⁻¹ v
-        return lx.linear_solve(transposed_sqrt, posterior.precision.mv(whitened)).value
+        solution = lx.linear_solve(transposed_sqrt, curved)
+        return solution.value
 
     precision = lx.FunctionLinearOperator(
         physical_precision, posterior.precision.in_structure(), _PSD_TAGS

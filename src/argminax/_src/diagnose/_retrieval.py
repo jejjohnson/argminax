@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+import einx
 import equinox as eqx
 import gaussx as gx
 import jax
@@ -61,14 +62,22 @@ def _require_probes(num_probes: int) -> None:
         raise ValidationError(msg)
 
 
-def _mean_and_stderr(terms: Float[Array, " K"]) -> TraceEstimate:
-    # the standard error of the mean of K probe terms
-    stderr = jnp.std(terms, ddof=1) / jnp.sqrt(terms.shape[0])
-    return TraceEstimate(value=jnp.mean(terms), stderr=stderr)
+def _mean_and_stderr(terms: Float[Array, " member"]) -> TraceEstimate:
+    """The mean of K probe terms and its standard error."""
+    num_terms = terms.shape[0]
+    # t̄ = (1/K) ∑ₖ tₖ
+    mean = einx.mean("member ->", terms)
+    # s = √(∑ₖ (tₖ − t̄)² / (K − 1)), the sample standard deviation
+    spread = jnp.std(terms, ddof=1)
+    # s / √K
+    stderr = spread / jnp.sqrt(num_terms)
+    return TraceEstimate(value=mean, stderr=stderr)
 
 
 def _exact(value: Float[Array, ""]) -> TraceEstimate:
-    return TraceEstimate(value=value, stderr=jnp.zeros_like(value))
+    """An exactly computed value, whose standard error is 0."""
+    stderr = jnp.zeros_like(value)
+    return TraceEstimate(value=value, stderr=stderr)
 
 
 def averaging_kernel(
@@ -111,15 +120,29 @@ def averaging_kernel(
         >>> kernel = averaging_kernel(posterior)
         >>> bool(jnp.allclose(kernel.as_matrix(), 0.5))
         True
+
+        In physical coordinates with Sₐ = 2: Ĥ = 1 + ½, Ŝ = ⅔, so
+        A = 1 − Ŝ Sₐ⁻¹ = ⅔.
+
+        >>> import lineax as lx
+        >>> prior_cov = lx.DiagonalLinearOperator(jnp.full(1, 2.0))
+        >>> def physical_residuals(x, y):
+        ...     return y - x, x / jnp.sqrt(2.0)
+        >>> physical = gauss_newton(physical_residuals, jnp.zeros(1), jnp.ones(1))
+        >>> kernel = averaging_kernel(physical, prior_cov)
+        >>> bool(jnp.allclose(kernel.as_matrix(), 2.0 / 3.0))
+        True
     """
     _require_vector_mode(posterior)
     covariance = posterior.covariance()
     structure = posterior.precision.in_structure()
     if prior_cov is None:
 
-        def whitened(vector: Float[Array, " N"]) -> Float[Array, " N"]:
+        def whitened(vector: Float[Array, " state"]) -> Float[Array, " state"]:
+            # Ĥ⁻¹ v
+            covariance_vector = covariance.mv(vector)
             # A v = v − Ĥ⁻¹ v
-            return vector - covariance.mv(vector)
+            return vector - covariance_vector
 
         return lx.FunctionLinearOperator(
             whitened,
@@ -127,11 +150,13 @@ def averaging_kernel(
             (lx.symmetric_tag, lx.positive_semidefinite_tag),
         )
 
-    def physical(vector: Float[Array, " N"]) -> Float[Array, " N"]:
+    def physical(vector: Float[Array, " state"]) -> Float[Array, " state"]:
         # Sₐ⁻¹ v
         prior_precision_vector = gx.solve(prior_cov, vector)
+        # Ŝ Sₐ⁻¹ v
+        covariance_vector = covariance.mv(prior_precision_vector)
         # A v = v − Ŝ Sₐ⁻¹ v
-        return vector - covariance.mv(prior_precision_vector)
+        return vector - covariance_vector
 
     return lx.FunctionLinearOperator(physical, structure)
 
@@ -153,6 +178,12 @@ def degrees_of_freedom(
     error of the K terms. Because dₛ = N − tr(Ĥ⁻¹) in whitened coordinates
     and zᵀz = N for a Rademacher probe, this is the same estimator as
     probing tr(Ĥ⁻¹).
+
+    Algorithm:
+        1. Without a key, return the exact trace of A.
+        2. With one, draw K Rademacher probes zₖ from the key.
+        3. Average zₖᵀ A zₖ over the probes, with the standard error of the
+           K terms.
 
     Args:
         kernel: The averaging kernel A, from `averaging_kernel`.
@@ -185,6 +216,15 @@ def degrees_of_freedom(
         >>> bool(jnp.allclose(probed.value, 1.5))
         True
 
+        One probe has no spread to estimate, so it is rejected:
+
+        >>> degrees_of_freedom(  # doctest: +IGNORE_EXCEPTION_DETAIL
+        ...     averaging_kernel(posterior), num_probes=1, key=jax.random.key(0)
+        ... )
+        Traceback (most recent call last):
+        ...
+        ValidationError: 'num_probes' must be an integer of at least 2, got 1
+
     References:
         Hutchinson, M. F. (1990). A stochastic estimator of the trace of the
         influence matrix for Laplacian smoothing splines. Communications in
@@ -195,13 +235,19 @@ def degrees_of_freedom(
         return _exact(gx.trace(kernel))
     _require_probes(num_probes)
     structure = kernel.in_structure()
-    probes = jax.random.rademacher(key, (num_probes, *structure.shape), structure.dtype)
+    probe_shape = (num_probes, *structure.shape)
+    # zₖ ∈ {−1, +1}ᴺ
+    probes = jax.random.rademacher(key, probe_shape, structure.dtype)
 
-    def probe_term(probe: Float[Array, " N"]) -> Float[Array, ""]:
+    def probe_term(probe: Float[Array, " state"]) -> Float[Array, ""]:
+        # A z
+        kernel_probe = kernel.mv(probe)
         # zᵀ A z
-        return jnp.vdot(probe, kernel.mv(probe))
+        return jnp.vdot(probe, kernel_probe)
 
-    return _mean_and_stderr(jax.vmap(probe_term)(probes))
+    terms = jax.vmap(probe_term)(probes)
+    # dₛ ≈ (1/K) ∑ₖ zₖᵀ A zₖ
+    return _mean_and_stderr(terms)
 
 
 def _slq_logdet(
@@ -222,13 +268,20 @@ def _slq_logdet(
         raise MissingExtraError(msg) from error
     structure = operator.in_structure()
     size = structure.shape[0]
-    # log |M| ≈ (1/K) ∑ₖ zₖᵀ log(M) zₖ, each term by m Lanczos steps
-    integrand = funm.monte_carlo_funm_sym_logdet(
-        decomp.tridiag_sym(min(num_matvecs, size))
-    )
+    # Lanczos cannot take more steps than the operator has dimensions
+    num_steps = min(num_matvecs, size)
+    tridiagonalise = decomp.tridiag_sym(num_steps)
+    integrand = funm.monte_carlo_funm_sym_logdet(tridiagonalise)
+    # zₖ ∈ {−1, +1}ᴺ
     probes = jax.random.rademacher(key, (num_probes, size), structure.dtype)
     matvec: Callable[[Array], Array] = operator.mv
-    terms = jax.vmap(lambda probe: integrand(matvec, probe))(probes)
+
+    def probe_term(probe: Float[Array, " state"]) -> Float[Array, ""]:
+        # zᵀ log(M) z, by m Lanczos steps
+        return integrand(matvec, probe)
+
+    terms = jax.vmap(probe_term)(probes)
+    # log |M| ≈ (1/K) ∑ₖ zₖᵀ log(M) zₖ
     return _mean_and_stderr(terms)
 
 
@@ -267,6 +320,13 @@ def information_content(
     ``num_matvecs`` Lanczos steps each, from the ``matfree`` extra, with
     the standard error of the K terms. log |Sₐ| is always exact.
 
+    Algorithm:
+        1. log |Ĥ|: exact without a key; with one, stochastic Lanczos
+           quadrature over K Rademacher probes, with its standard error.
+        2. log |Sₐ|: exact, or 0 in whitened coordinates.
+        3. H = ½ (log |Ĥ| + log |Sₐ|), with half the standard error of
+           log |Ĥ|.
+
     Args:
         posterior: The posterior N(x̂, Ĥ⁻¹), with a vector mode.
         prior_cov: The prior covariance Sₐ, for a posterior in physical
@@ -297,6 +357,18 @@ def information_content(
         >>> bool(jnp.allclose(content.value, 0.5 * jnp.log(2.0)))
         True
 
+        In physical coordinates with Sₐ = 2: Ĥ = 1 + ½, so
+        H = ½ log(Sₐ Ĥ) = ½ log 3.
+
+        >>> import lineax as lx
+        >>> prior_cov = lx.DiagonalLinearOperator(jnp.full(1, 2.0))
+        >>> def physical_residuals(x, y):
+        ...     return y - x, x / jnp.sqrt(2.0)
+        >>> physical = gauss_newton(physical_residuals, jnp.zeros(1), jnp.ones(1))
+        >>> content = information_content(physical, prior_cov)
+        >>> bool(jnp.allclose(content.value, 0.5 * jnp.log(3.0)))
+        True
+
     References:
         Ubaru, S., Chen, J. & Saad, Y. (2017). Fast estimation of tr(f(A))
         via stochastic Lanczos quadrature. SIAM J. Matrix Anal. Appl. 38(4),
@@ -306,8 +378,12 @@ def information_content(
     log_det = _logdet_estimate(
         posterior, num_probes=num_probes, num_matvecs=num_matvecs, key=key
     )
+    # log |Sₐ|, which is 0 in whitened coordinates
     prior_log_det = 0.0 if prior_cov is None else gx.logdet(prior_cov)
+    # log |Ĥ| + log |Sₐ|
+    total_log_det = log_det.value + prior_log_det
     # H = ½ (log |Ĥ| + log |Sₐ|)
-    return TraceEstimate(
-        value=0.5 * (log_det.value + prior_log_det), stderr=0.5 * log_det.stderr
-    )
+    value = 0.5 * total_log_det
+    # log |Sₐ| is exact, so only log |Ĥ| carries an error
+    stderr = 0.5 * log_det.stderr
+    return TraceEstimate(value=value, stderr=stderr)

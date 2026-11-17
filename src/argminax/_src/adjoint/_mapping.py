@@ -84,11 +84,11 @@ def to_optimistix_adjoint(spec: Any) -> optx.AbstractAdjoint:
     if name == "ImplicitAdjoint":
         return optx.ImplicitAdjoint()
     if name == "TruncatedAdjoint":
-        return KStep(k=getattr(spec, "k", 1))
+        k = getattr(spec, "k", 1)
+        return KStep(k=k)
     if name == "RecursiveCheckpointAdjoint":
-        return optx.RecursiveCheckpointAdjoint(
-            checkpoints=getattr(spec, "checkpoints", None)
-        )
+        checkpoints = getattr(spec, "checkpoints", None)
+        return optx.RecursiveCheckpointAdjoint(checkpoints=checkpoints)
     if name in ("DirectAdjoint", "BacksolveAdjoint"):
         msg = (
             f"{name} is an adjoint through time, with no meaning for a "
