@@ -21,7 +21,7 @@ It is one package, `src/argminax/`. Logic lives in `argminax._src.<module>`, and
 | `adjoint` | `KStep` and `OneStep` adjoints for a minimiser stopped early; `to_optimistix_adjoint` | Wave 1 (#15, #16) |
 | `curvature` | Gauss–Newton curvature and the Laplace covariance Ŝ as gaussx operators; their low-rank and diagonal forms; perturbation sampling | Wave 1 (#17, #18) |
 | `diagnose` | the averaging kernel, degrees of freedom for signal, information content, evidence at the minimum, the prior-precision search | Wave 2 (#20, #21) |
-| `blr` | the Bayesian learning rule as optax `GradientTransformation`s that carry a Gaussian over the parameters in their state: `blr_diagonal`, `ivon` | Wave 5 (#59, #60) |
+| `blr` | the Bayesian learning rule as optax `GradientTransformation`s that carry a Gaussian over the parameters in their state: `blr_diagonal`, `blr_full_rank`, `newton`, `ivon` | Wave 5 (#59 to #61) |
 | `solve` | `GaussNewtonCG` (Gauss–Newton and Levenberg–Marquardt with an inner CG), `dual_solve`, `laplace_mode`, positivity and bounds by reparametrisation | Wave 3 (#23 to #26) |
 
 `curvature` sits below `diagnose`, which reads the operators it builds; `adjoint` and `solve` sit beside `curvature`, and none of the four imports `diagnose`. `blr` may import `curvature` and nothing else in the package, and no other module imports `blr`.
@@ -70,7 +70,9 @@ Before writing a helper, a solver, an operator or a diagnostic, find out whether
 | A dense `K.T @ inv(S_eps) @ K + inv(S_a)` | `gaussx.gauss_newton_operator` (matrix-free and PSD-tagged) or `gaussx.gauss_newton_precision` for a small dense Jacobian; `argminax.curvature` builds Ŝ on them in Wave 1 (#17) |
 | A log-determinant | gaussx (`gaussx.logdet` and the structured forms); `matfree` behind the `argminax[matfree]` extra for stochastic Lanczos quadrature |
 | One Newton step | `gaussx.newton_update` |
-| One step of the Bayesian learning rule | `gaussx.blr_diag_update`, `gaussx.blr_full_update`, called on the log-joint (the prior folded into the gradient and the Hessian) |
+| One step of the Bayesian learning rule | `gaussx.blr_diag_update` on the log-joint (the prior folded into the gradient and the Hessian). The full-rank transform writes its two-line step in `argminax._src.blr._full_rank._transform`, because it needs the mean that `gaussx.blr_full_update` solves for and does not return, and an untagged solve for `newton`; its tests pin the step to `gaussx.blr_full_update` |
+| A curvature name (`"ggn"`, `"identity"`) or callable turned into C(μ, g) | `resolve_curvature` in `argminax._src.blr._curvature` |
+| Newton's method inside an optax loop | `argminax.blr.newton`; for a solve to a tolerance, `argminax.solve.GaussNewtonCG` or an optimistix solver |
 | An Adam-like optimiser that also gives a variance | `argminax.blr.blr_diagonal`, `argminax.blr.ivon` |
 | An optax import, a step-size schedule lookup or an option check in a transform | `require_optax`, `step_size` and the `require_*` checks in `argminax._src.blr._optax` |
 | Differentiating through a converged minimum | `optx.ImplicitAdjoint`; argminax adds `KStep` and `OneStep` only for a solver stopped early (Wave 1, #15) |
