@@ -117,7 +117,7 @@ ignore = ["E402", "E721", "E731", "E741", "F722"]
 # Docstrings and comments carry Unicode maths (eman-style-math, "Maths
 # notation" in AGENTS.md), so the maths glyphs that look like ASCII are allowed,
 # and the en dash of "Gauss–Newton".
-allowed-confusables = ["−", "–", "×", "∗", "∣", "α", "γ", "ι", "ν", "ο", "ρ", "σ", "υ", "𝒩", "ℝ", "′", "𝒥"]
+allowed-confusables = ["−", "–", "×", "∗", "∣", "α", "γ", "ι", "ν", "ο", "ρ", "σ", "υ", "𝒩", "ℝ", "′", "𝒥", "ℰ", "𝕀"]
 
 [tool.ruff.lint.isort]
 combine-as-imports = true

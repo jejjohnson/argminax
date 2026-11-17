@@ -7,11 +7,11 @@ Every solver here is an optimistix solver, so ``optx.minimise`` and
 | Name | What it gives you |
 |---|---|
 | `GaussNewtonCG` | Gauss–Newton and Levenberg–Marquardt with a matrix-free inner CG |
-| `dual_solve` | the observation-space (PSAS) increment, CG on (H B Hᵀ + R) λ = d |
+| `dual_solve` | the observation-space (PSAS) increment, CG on (H Σ_x Hᵀ + Σ_ε) w = r |
 | `incremental_dual_solve` | its outer loop for a nonlinear forward model |
-| `Reparametrised` | positive and bounded states, solved in an unconstrained u |
+| `Reparametrised` | bounded states x = g(u), solved in an unconstrained control u |
 | `laplace_mode` | the damped Newton loop to the mode of a GMRF model (precision form) |
-| `laplace_mode_covariance` | the same for a GP with prior covariance K |
+| `laplace_mode_covariance` | the same for a GP with prior covariance K_XX |
 | `laplace_mode_sites` | the same given a posterior-mean map of sites (Markov GPs) |
 """
 

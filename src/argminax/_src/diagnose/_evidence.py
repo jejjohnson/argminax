@@ -41,23 +41,28 @@ def evidence(
 ) -> TraceEstimate:
     """Return the Laplace evidence log p(y) at a minimum.
 
-        log p(y) ≈ −J(x̂) − ½ log |Ĥ| − ½ log |Sₐ| − ½ log |2π Sε|
+        log p(y) ≈ −𝒥(x̂) − ½ log det Λ_x∣y − ½ log det Σ_x
+                   − ½ log det(2π Σ_ε)
 
-    J(x̂) = ½ ‖r(x̂)‖² is the cost at the minimum. In whitened coordinates
-    (prior N(0, I), the default) log |Sₐ| = 0; in physical ones pass it as
-    ``prior_cov_logdet``. The approximation is exact for a linear forward
-    model and inherits the Gauss–Newton curvature's optimism at large
-    residuals. Without a key log |Ĥ| is exact (`gaussx.logdet`); with one it
-    is stochastic Lanczos quadrature with a standard error, as in
-    `information_content`.
+    𝒥(x̂) = ½ ‖r(x̂)‖² is the cost at the minimum, with r the whitened
+    residuals; Λ_x∣y is the posterior precision (D_x × D_x), Σ_x the prior
+    covariance (D_x × D_x) and Σ_ε the measurement-error covariance
+    (D_y × D_y). In whitened coordinates (prior 𝒩(0, I), the default)
+    log det Σ_x = 0; in physical ones pass it as ``prior_cov_logdet``. The
+    approximation is exact for a linear forward model and inherits the
+    Gauss–Newton curvature's optimism at large residuals. Without a key
+    log det Λ_x∣y is exact (`gaussx.logdet`); with one it is stochastic
+    Lanczos quadrature with a standard error, as in `information_content`.
 
     Args:
-        posterior: The posterior N(x̂, Ĥ⁻¹), with a vector mode.
-        cost_at_mode: J(x̂), the cost at the minimum.
-        obs_cov_logdet: log |2π Sε| = M log 2π + log |Sε|, for M measurements.
-        prior_cov_logdet: log |Sₐ|, for a posterior in physical coordinates.
-        num_probes: Number of probes K, used only with a key.
-        num_matvecs: Lanczos steps per probe, capped at N.
+        posterior: The posterior 𝒩(x̂, Λ_x∣y⁻¹), with a vector mode.
+        cost_at_mode: 𝒥(x̂), the cost at the minimum.
+        obs_cov_logdet: log det(2π Σ_ε) = D_y log 2π + log det Σ_ε, for D_y
+            measurements.
+        prior_cov_logdet: log det Σ_x, for a posterior in physical
+            coordinates.
+        num_probes: Number of probes N_ℰ, used only with a key.
+        num_matvecs: Lanczos steps per probe, capped at D_x.
         key: Random key for the probes; ``None`` for the exact value.
 
     Returns:
@@ -69,7 +74,7 @@ def evidence(
 
     Examples:
         One unknown with a unit prior, measured once with unit noise:
-        y ~ N(0, 2), so at y = 1 the evidence is log N(1; 0, 2).
+        y ~ 𝒩(0, 2), so at y = 1 the evidence is log 𝒩(1; 0, 2).
 
         >>> import jax.numpy as jnp
         >>> from argminax.curvature import gauss_newton
@@ -78,7 +83,7 @@ def evidence(
         ...     return y - x, x
         >>> measurement = jnp.ones(1)
         >>> posterior = gauss_newton(residuals, jnp.array([0.5]), measurement)
-        >>> # J(x̂) = ½ (0.5² + 0.5²) and log |2π Sε| = log 2π
+        >>> # 𝒥(x̂) = ½ (0.5² + 0.5²) and log det(2π Σ_ε) = log 2π
         >>> log_evidence = evidence(posterior, 0.25, jnp.log(2.0 * jnp.pi))
         >>> exact = -0.25 - 0.5 * jnp.log(4.0 * jnp.pi)
         >>> bool(jnp.allclose(log_evidence.value, exact))
@@ -106,11 +111,11 @@ def evidence(
     cost = jnp.asarray(cost_at_mode)
     prior_log_det = jnp.asarray(prior_cov_logdet)
     obs_log_det = jnp.asarray(obs_cov_logdet)
-    # log |Ĥ| + log |Sₐ| + log |2π Sε|
+    # log det Λ_x∣y + log det Σ_x + log det(2π Σ_ε)
     total_log_det = log_det.value + prior_log_det + obs_log_det
-    # log p(y) ≈ −J(x̂) − ½ (log |Ĥ| + log |Sₐ| + log |2π Sε|)
+    # log p(y) ≈ −𝒥(x̂) − ½ (log det Λ_x∣y + log det Σ_x + log det(2π Σ_ε))
     value = -cost - 0.5 * total_log_det
-    # only log |Ĥ| is estimated, so it carries the whole error
+    # only log det Λ_x∣y is estimated, so it carries the whole error
     stderr = 0.5 * log_det.stderr
     return TraceEstimate(value=value, stderr=stderr)
 
@@ -123,21 +128,24 @@ def optimize_prior_precision(
     num_refine: int = 100,
     bounds: tuple[float, float] | None = None,
 ) -> Float[Array, ""]:
-    """Return the isotropic prior precision λ that maximises the Laplace evidence.
+    """Return the isotropic prior precision δ that maximises the Laplace evidence.
 
-        λ̂ = argmax_λ  f(λ) + (N/2) log λ − ½ ∑ᵢ log(gᵢ + λ)
+        δ̂ = argmax_δ  f(δ) + (D_θ/2) log δ − ½ ∑ᵢ log(gᵢ + δ)
 
-    gᵢ are the eigenvalues of the Gauss–Newton curvature of the
-    log-likelihood, so log |Ĥ_λ| = ∑ᵢ log(gᵢ + λ) for the posterior precision
-    Ĥ_λ = G + λ I, and f(λ) is the rest of the evidence as a function of λ:
-    the fit of the mode re-solved at each λ. For a quadratic model about
-    w⋆ (pyrox-nn's last-layer Laplace), in the eigenbasis of G with
-    d = Qᵀ w⋆, β = Qᵀ b and ω = (g ⊙ d + β)/(g + λ),
-    f(λ) = βᵀ(ω − d) − ½ ∑ᵢ gᵢ (ωᵢ − dᵢ)² − (λ/2) ‖ω‖².
+    for a prior 𝒩(0, δ⁻¹ I) on D_θ parameters θ, as a last-layer Laplace
+    tunes it (Daxberger et al. 2021).
+    gᵢ are the eigenvalues of Λ_lik, the Gauss–Newton curvature of the
+    log-likelihood (D_θ × D_θ), so log det Λ_θ∣y(δ) = ∑ᵢ log(gᵢ + δ) for the
+    posterior precision Λ_θ∣y(δ) = Λ_lik + δ I, and f(δ) is the rest of the
+    evidence as a function of δ: the fit of the mode re-solved at each δ.
+    For a quadratic model about θ⋆ (pyrox-nn's last-layer Laplace), in the
+    eigenbasis Q of Λ_lik with d = Qᵀ θ⋆, b̃ = Qᵀ b and
+    ω = (g ⊙ d + b̃)/(g + δ),
+    f(δ) = b̃ᵀ(ω − d) − ½ ∑ᵢ gᵢ (ωᵢ − dᵢ)² − (δ/2) ‖ω‖².
 
     Algorithm:
-        1. Evaluate the evidence on ``num_grid`` points of log λ, by
-           default across half the dtype's exponent range each way, so λ
+        1. Evaluate the evidence on ``num_grid`` points of log δ, by
+           default across half the dtype's exponent range each way, so δ
            and every term stay finite. A grid finds the global maximum of an
            evidence with more than one local maximum, where a local 1-D
            search could stop at the wrong one.
@@ -145,17 +153,17 @@ def optimize_prior_precision(
            either side of the best point.
 
     Args:
-        ggn_eigenvalues: The eigenvalues g of the Gauss–Newton curvature,
-            non-negative (clip round-off below zero first).
-        fit_term: f(λ), a scalar function of the prior precision.
-        num_grid: Grid points on log λ.
+        ggn_eigenvalues: The eigenvalues g of the Gauss–Newton curvature
+            Λ_lik, non-negative (clip round-off below zero first).
+        fit_term: f(δ), a scalar function of the prior precision.
+        num_grid: Grid points on log δ.
         num_refine: Golden-section steps, each shrinking the bracket by
             0.618.
-        bounds: The range of log λ to search; default ±½ log of the largest
+        bounds: The range of log δ to search; default ±½ log of the largest
             float of the eigenvalues' dtype.
 
     Returns:
-        λ̂, a scalar in the dtype of the eigenvalues.
+        δ̂, a scalar in the dtype of the eigenvalues.
 
     Raises:
         ValidationError: If ``num_grid`` is below 3 or ``num_refine`` is
@@ -163,7 +171,7 @@ def optimize_prior_precision(
 
     Examples:
         No fit term and unit curvature, g = (1, 1): the evidence
-        log λ − log(1 + λ) only grows, so λ̂ sits at the top of the range.
+        log δ − log(1 + δ) only grows, so δ̂ sits at the top of the range.
 
         >>> import jax.numpy as jnp
         >>> from argminax.diagnose import optimize_prior_precision
@@ -173,8 +181,8 @@ def optimize_prior_precision(
         >>> bool(jnp.allclose(jnp.log(best), 4.0))
         True
 
-        A fit term f(λ) = −λ and g = (1,): the evidence peaks where
-        2λ² + 2λ − 1 = 0, at λ̂ = (√3 − 1)/2.
+        A fit term f(δ) = −δ and g = (1,): the evidence peaks where
+        2δ² + 2δ − 1 = 0, at δ̂ = (√3 − 1)/2.
 
         >>> best = optimize_prior_precision(jnp.ones(1), lambda lam: -lam)
         >>> bool(jnp.allclose(best, (jnp.sqrt(3.0) - 1.0) / 2.0, rtol=1e-4))
@@ -191,7 +199,9 @@ def optimize_prior_precision(
 
     References:
         MacKay, D. J. C. (1992). Bayesian interpolation. Neural Computation
-        4(3), 415–447.
+        4(3), 415–447. Daxberger, E., Kristiadi, A., Immer, A., Eschenhagen,
+        R., Bauer, M. & Hennig, P. (2021). Laplace redux: effortless Bayesian
+        deep learning. NeurIPS 34.
     """
     if isinstance(num_grid, bool) or not isinstance(num_grid, int) or num_grid < 3:
         msg = f"'num_grid' must be an integer of at least 3, got {num_grid!r}"
@@ -208,19 +218,19 @@ def optimize_prior_precision(
     size = eigenvalues.shape[0]
 
     def log_evidence(log_lam: Float[Array, ""]) -> Float[Array, ""]:
-        # λ = exp(log λ)
+        # δ = exp(log δ)
         lam = jnp.exp(log_lam)
-        # log(gᵢ + λ)
+        # log(gᵢ + δ)
         log_shifted = jnp.log(eigenvalues + lam)
-        # ∑ᵢ log(gᵢ + λ) = log |Ĥ_λ|
+        # ∑ᵢ log(gᵢ + δ) = log det Λ_θ∣y(δ)
         log_det = einx.sum("state ->", log_shifted)
-        # f(λ) + (N/2) log λ − ½ ∑ᵢ log(gᵢ + λ)
+        # f(δ) + (D_θ/2) log δ − ½ ∑ᵢ log(gᵢ + δ)
         return fit_term(lam) + 0.5 * size * log_lam - 0.5 * log_det
 
-    # --- grid over log λ ---
+    # --- grid over log δ ---
     if bounds is None:
         largest = float(jnp.finfo(dtype).max)
-        # ±½ log of the largest float keeps λ and every term finite
+        # ±½ log of the largest float keeps δ and every term finite
         reach = 0.5 * math.log(largest)
         bounds = (-reach, reach)
     low, high = bounds
@@ -250,7 +260,7 @@ def optimize_prior_precision(
         return new_left, new_right
 
     lower, upper = jax.lax.fori_loop(0, num_refine, golden, (lower, upper))
-    # log λ̂ at the centre of the final bracket
+    # log δ̂ at the centre of the final bracket
     midpoint = 0.5 * (lower + upper)
     # exp in the eigenvalues' dtype, which the docstring promises
     return jnp.exp(midpoint).astype(dtype)

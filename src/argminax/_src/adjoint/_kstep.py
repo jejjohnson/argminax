@@ -71,7 +71,7 @@ def _proposes_next_iterate(inputs: tuple[Any, ...]) -> bool:
 class KStep(optx.AbstractAdjoint):
     """Differentiate a minimiser through its last k iterate updates only.
 
-        ξ̂ = Φᵏ(ξ̄, θ),   ξ̄ = sg(ξ_{T−k})
+        ξ̂ = Φᵏ(ξ̄; θ),   ξ̄ = sg(ξ_{T−k})
 
     Φ is one iterate update of the solver, θ the solve's ``args``, T the
     number of updates the solve took and sg the stop-gradient, so ∂ξ̂/∂θ
@@ -108,7 +108,7 @@ class KStep(optx.AbstractAdjoint):
         ValidationError: If ``k`` is not a positive integer.
 
     Examples:
-        Gradient descent with unit step on f(x, θ) = θx²/2 from x₀ = 1:
+        Gradient descent with unit step on 𝒥(x; θ) = θx²/2 from x₀ = 1:
         ξₜ₊₁ = (1 − θ) ξₜ, so after two updates at θ = 0.5 the last one
         gives ∂ξ₂/∂θ = −ξ₁ = −0.5 (optimistix counts one extra step, hence
         ``max_steps=3``).
@@ -189,7 +189,7 @@ class KStep(optx.AbstractAdjoint):
         proposes_next = _proposes_next_iterate(inputs)
         # one extra step when each update spans two (the search-based solvers)
         lag = int(proposes_next)
-        # w = k + lag solver steps hold the last k updates
+        # N_buffer = k + lag solver steps hold the last k updates
         window = self.k + lag
 
         # --- the solve, under stop_gradient, buffering the last carries ---
@@ -247,14 +247,14 @@ class KStep(optx.AbstractAdjoint):
             # y0 keeps its gradient; otherwise the carry entering step
             # T − window sits in slot T mod window
             from_start = steps < window
-            # the carry entering step T − w sits in slot T mod w
+            # the carry entering step T − N_buffer sits in slot T mod N_buffer
             start_slot = steps % window
             carry = jtu.tree_map(
                 lambda live, stored: jnp.where(from_start, live, stored[start_slot]),
                 init_carry,
                 buffer,
             )
-            # min(T, w) steps to replay
+            # min(T, N_buffer) steps to replay
             replayed = jnp.minimum(steps, window)
             for index in range(window):
                 carry = jax.lax.cond(
@@ -268,7 +268,7 @@ class KStep(optx.AbstractAdjoint):
 class OneStep(KStep):
     """Differentiate a minimiser through its last iterate update only.
 
-        ξ̂ = Φ(ξ̄, θ),   ξ̄ = sg(ξ_{T−1})
+        ξ̂ = Φ(ξ̄; θ),   ξ̄ = sg(ξ_{T−1})
 
     `KStep` with k = 1 (Bolte, Pauwels and Vaiter, 2023): O(1) memory, as
     ``optx.ImplicitAdjoint``, without needing strict convergence, and exact

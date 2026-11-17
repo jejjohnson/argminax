@@ -1,7 +1,8 @@
-"""Variances, a low-rank form and samples of a Laplace posterior, without forming Ŝ.
+"""Variances, a low-rank form and samples of a Laplace posterior, without Σ_x∣y.
 
-Each needs only products and solves with the precision Ĥ, so they work at
-state sizes where Ŝ cannot be stored; randomness comes only through keys.
+Each needs only products and solves with the posterior precision Λ_x∣y, so
+they work at state sizes D_x where the posterior covariance Σ_x∣y cannot be
+stored; randomness comes only through keys.
 """
 
 from __future__ import annotations
@@ -49,8 +50,8 @@ class VarianceEstimate(eqx.Module):
     """A probed estimate of the marginal variances, with its standard error.
 
     Attributes:
-        estimate: The estimated diag(Ŝ), shape (N,).
-        stderr: The standard error of each entry, shape (N,).
+        estimate: The estimated diag(Σ_x∣y), shape (D_x,).
+        stderr: The standard error of each entry, shape (D_x,).
     """
 
     estimate: Float[Array, " state"]
@@ -60,29 +61,32 @@ class VarianceEstimate(eqx.Module):
 def marginal_variance(
     posterior: Laplace, *, num_probes: int = 64, key: PRNGKeyArray | None = None
 ) -> VarianceEstimate | Float[Array, " state"]:
-    """Return the marginal variances diag(Ŝ) of a Laplace posterior.
+    """Return the marginal variances diag(Σ_x∣y) of a Laplace posterior.
 
-        diag(Ŝ) ≈ (1/K) ∑ₖ zₖ ⊙ Ŝ zₖ,   zₖ Rademacher
+        diag(Σ_x∣y) ≈ (1/N_ℰ) ∑ₑ v⁽ᵉ⁾ ⊙ Σ_x∣y v⁽ᵉ⁾,   v⁽ᵉ⁾ Rademacher
 
-    Without a key the diagonal is exact, from one solve with Ĥ per unknown
+    Without a key the diagonal is exact, from one solve with Λ_x∣y per unknown
     (`gaussx.diag_inv` with ``method="solve"``). With a key it is probed:
-    each Rademacher probe zₖ costs one solve, and the result carries the
-    standard error of the K probes. A solve stopped at a loose tolerance
+    each Rademacher probe v⁽ᵉ⁾ ∈ ℝ^D_x costs one solve, and the result carries
+    the standard error of the N_ℰ probes. A solve stopped at a loose tolerance
     biases every probe the same way, so set the solver's tolerance below the
     standard error you need.
 
     Algorithm:
-        1. Without a key: diag(Ŝ) exactly, by one solve with Ĥ per unknown.
-        2. With a key: draw K Rademacher probes zₖ, form zₖ ⊙ Ĥ⁻¹ zₖ by one
-           solve each, and return their mean and its standard error.
+        1. Without a key: diag(Σ_x∣y) exactly, by one solve with Λ_x∣y per
+           unknown.
+        2. With a key: draw N_ℰ Rademacher probes v⁽ᵉ⁾, form
+           v⁽ᵉ⁾ ⊙ Λ_x∣y⁻¹ v⁽ᵉ⁾ by one solve each, and return their mean and
+           its standard error.
 
     Args:
-        posterior: The posterior N(x̂, Ĥ⁻¹).
-        num_probes: Number of probes K, used only with a key.
+        posterior: The posterior 𝒩(x̂, Λ_x∣y⁻¹).
+        num_probes: Number of probes N_ℰ, used only with a key.
         key: Random key for the probes; ``None`` for the exact diagonal.
 
     Returns:
-        diag(Ŝ), shape (N,), without a key; a `VarianceEstimate` with one.
+        diag(Σ_x∣y), shape (D_x,), without a key; a `VarianceEstimate` with
+        one.
 
     Raises:
         ValidationError: If the mode is not one-dimensional, or
@@ -98,7 +102,7 @@ def marginal_variance(
         >>> bool(jnp.allclose(marginal_variance(posterior), 0.5))
         True
 
-        A diagonal Ŝ is probed exactly by Rademacher probes, so the standard
+        A diagonal Σ_x∣y is probed exactly by Rademacher probes, so the standard
         error vanishes.
 
         >>> probed = marginal_variance(posterior, key=jax.random.key(0))
@@ -112,27 +116,27 @@ def marginal_variance(
         return gx.diag_inv(posterior.precision, method="solve", solver=posterior.solver)
     _require_count(num_probes, "num_probes", minimum=2)
     size = jnp.shape(posterior.mode)[0]
-    # zₖ Rademacher, one row per probe
+    # v⁽ᵉ⁾ Rademacher, one row per probe
     probes = jax.random.rademacher(key, (num_probes, size), posterior.mode.dtype)
 
     def probe_term(probe: Float[Array, " state"]) -> Float[Array, " state"]:
-        # Ŝ z = Ĥ⁻¹ z, by one solve
+        # Σ_x∣y v⁽ᵉ⁾ = Λ_x∣y⁻¹ v⁽ᵉ⁾, by one solve
         covariance_probe = posterior.solver.solve(posterior.precision, probe)
-        # z ⊙ Ŝ z
+        # w⁽ᵉ⁾ = v⁽ᵉ⁾ ⊙ Σ_x∣y v⁽ᵉ⁾
         return probe * covariance_probe
 
     terms = jax.vmap(probe_term)(probes)
 
-    # --- mean and standard error over the K probes ---
-    # diag(Ŝ) ≈ (1/K) ∑ₖ zₖ ⊙ Ŝ zₖ
+    # --- mean and standard error over the N_ℰ probes ---
+    # diag(Σ_x∣y) ≈ w̄ = (1/N_ℰ) ∑ₑ w⁽ᵉ⁾
     estimate = einx.mean("member state -> state", terms)
-    # tₖ − t̄
+    # w⁽ᵉ⁾ − w̄
     deviations = einx.subtract("member state, state -> member state", terms, estimate)
-    # ∑ₖ (tₖ − t̄)²
+    # ∑ₑ (w⁽ᵉ⁾ − w̄)²
     squared_deviations = einx.sum("member state -> state", deviations**2)
-    # s² = ∑ₖ (tₖ − t̄)² / (K − 1), the unbiased sample variance
+    # σ̂² = ∑ₑ (w⁽ᵉ⁾ − w̄)² / (N_ℰ − 1), the unbiased sample variance
     sample_variance = squared_deviations / (num_probes - 1)
-    # SE = s / √K
+    # SE = σ̂ / √N_ℰ
     stderr = jnp.sqrt(sample_variance) / jnp.sqrt(num_probes)
     return VarianceEstimate(estimate=estimate, stderr=stderr)
 
@@ -140,40 +144,41 @@ def marginal_variance(
 def low_rank(posterior: Laplace, rank: int, *, key: PRNGKeyArray) -> gx.LowRankUpdate:
     """Return a low-rank form of the covariance of a whitened posterior.
 
-        Ĥ = I + V diag(μ − 1) Vᵀ + …,   Ŝ ≈ I − V diag((μ − 1)/μ) Vᵀ
+        Λ_x∣y = I + Φ diag(γ − 1) Φᵀ + …,   Σ_x∣y ≈ I − Φ diag((γ − 1)/γ) Φᵀ
 
-    In whitened coordinates (prior N(0, I), argminax's convention) the
+    In whitened coordinates (prior 𝒩(0, I), argminax's convention) the
     precision is the identity plus the data's curvature, so the R largest
-    eigenpairs (μᵢ, vᵢ) of Ĥ carry everything the measurements taught, and
-    Ŝ is the prior I less the variance they removed. The form is exact when
+    eigenpairs (γ_d, φ_d) of Λ_x∣y, stacked as Φ ∈ ℝ^(D_x × R), carry
+    everything the measurements taught, and Σ_x∣y is the prior I less the
+    variance they removed. The form is exact when
     the data's curvature has rank R or less (at most the number of
     measurements), and leaves the prior variance in every direction it
     misses.
 
     Algorithm:
-        1. The R largest eigenpairs of Ĥ by `gaussx.randomized_eigh`
+        1. The R largest eigenpairs of Λ_x∣y by `gaussx.randomized_eigh`
            (Rayleigh–Ritz with oversampling and power iterations), from
-           products with Ĥ only.
-        2. Ŝ ≈ I + V diag(dᵢ) Vᵀ with dᵢ = −(μᵢ − 1)/μᵢ, as a
-           `gaussx.LowRankUpdate` of the identity with orthonormal V.
+           products with Λ_x∣y only.
+        2. Σ_x∣y ≈ I + Φ diag(c) Φᵀ with c_d = −(γ_d − 1)/γ_d, as a
+           `gaussx.LowRankUpdate` of the identity with orthonormal Φ.
 
     Args:
         posterior: A posterior in whitened coordinates, whose precision has
             every eigenvalue at least 1.
-        rank: Number of eigenpairs R, from 1 to N.
+        rank: Number of eigenpairs R, from 1 to D_x.
         key: Random key for the test matrix.
 
     Returns:
-        Ŝ as an (N, N) `gaussx.LowRankUpdate`, tagged symmetric and positive
+        Σ_x∣y as a (D_x, D_x) `gaussx.LowRankUpdate`, tagged symmetric and positive
         semidefinite.
 
     Raises:
         ValidationError: If the mode is not one-dimensional, or ``rank`` is
-            not an integer from 1 to N.
+            not an integer from 1 to D_x.
 
     Examples:
         Three unknowns, one measurement of their sum with unit noise:
-        Ĥ = I + 1 1ᵀ has one eigenvalue above 1, so rank 1 is exact.
+        Λ_x∣y = I + 1 1ᵀ has one eigenvalue above 1, so rank 1 is exact.
 
         >>> import jax
         >>> import jax.numpy as jnp
@@ -198,12 +203,12 @@ def low_rank(posterior: Laplace, rank: int, *, key: PRNGKeyArray) -> gx.LowRankU
     if rank > size:
         msg = f"'rank' must be at most the state size {size}, got {rank}"
         raise ValidationError(msg)
-    # the R largest eigenpairs (μᵢ, vᵢ) of Ĥ, from products with Ĥ only
+    # the R largest eigenpairs (γ_d, φ_d) of Λ_x∣y, from products with it only
     eigenvalues, eigenvectors = gx.randomized_eigh(posterior.precision, rank, key=key)
-    # dᵢ = −(μᵢ − 1)/μᵢ, the variance the data removed along vᵢ
+    # c_d = −(γ_d − 1)/γ_d, the variance the data removed along φ_d
     removed = -(eigenvalues - 1.0) / eigenvalues
     identity = lx.IdentityLinearOperator(posterior.precision.in_structure())
-    # Ŝ ≈ I + V diag(dᵢ) Vᵀ
+    # Σ_x∣y ≈ I + Φ diag(c) Φᵀ
     return gx.LowRankUpdate(
         identity,
         eigenvectors,
@@ -223,29 +228,31 @@ def sample_by_perturbation(
 ) -> Float[Array, " member state"]:
     """Draw from a Gauss–Newton posterior by perturbing its residuals.
 
-        Ĥ δ = J_rᵀ z,   z ~ N(0, I_M),   Cov(δ) = Ĥ⁻¹ J_rᵀ J_r Ĥ⁻¹ = Ĥ⁻¹
+        Λ_x∣y δ⁽ᵉ⁾ = J_rᵀ v⁽ᵉ⁾,   v⁽ᵉ⁾ ~ 𝒩(0, I_D_r),
+        Cov(δ⁽ᵉ⁾) = Λ_x∣y⁻¹ J_rᵀ J_r Λ_x∣y⁻¹ = Λ_x∣y⁻¹
 
-    Each draw is x̂ + δ, one product with J_rᵀ and one solve with Ĥ, so Ŝ
-    and a square root of it are never formed. The covariance is exact
-    because the prior rows are part of J_r, so Ĥ = J_rᵀ J_r: ``posterior``
+    Each draw is x̂ + δ⁽ᵉ⁾, one product with J_rᵀ and one solve with Λ_x∣y,
+    so Σ_x∣y and a square root of it are never formed. Here J_r is the
+    D_r × D_x Jacobian of the whitened residuals r at x̂. The covariance is
+    exact because the prior rows are part of J_r, so Λ_x∣y = J_rᵀ J_r: ``posterior``
     must come from `gauss_newton` on the same ``residuals`` and ``args``. An
     inexact solve biases every draw; set the solver's tolerance accordingly.
 
     Algorithm:
         1. Linearise the residuals at x̂ once, keeping the pullback v ↦ J_rᵀ v.
-        2. For each draw, z ~ N(0, I_M), then δ = Ĥ⁻¹ J_rᵀ z by one pullback
-           and one solve, and return x̂ + δ.
+        2. For each draw, v⁽ᵉ⁾ ~ 𝒩(0, I_D_r), then δ⁽ᵉ⁾ = Λ_x∣y⁻¹ J_rᵀ v⁽ᵉ⁾ by
+           one pullback and one solve, and return x̂ + δ⁽ᵉ⁾.
 
     Args:
         residuals: The whitened residuals r(x, args) the posterior was built
             from.
-        posterior: The posterior N(x̂, Ĥ⁻¹).
-        n: Number of draws.
+        posterior: The posterior 𝒩(x̂, Λ_x∣y⁻¹).
+        n: Number of draws N_ℰ.
         args: Passed to ``residuals`` as its second argument.
-        key: Random key for z.
+        key: Random key for the standard normal draws v⁽ᵉ⁾.
 
     Returns:
-        The draws, shape (n, N).
+        The draws, shape (N_ℰ, D_x).
 
     Raises:
         ValidationError: If ``n`` is not a positive integer.
@@ -279,15 +286,15 @@ def sample_by_perturbation(
     # r(x̂), and the pullback v ↦ J_rᵀ v at x̂
     residual_at_mode, pullback = jax.vjp(flat_residuals, posterior.mode)
     residual_size = residual_at_mode.shape[0]
-    # z ~ N(0, I_M), one row per draw
+    # v⁽ᵉ⁾ ~ 𝒩(0, I_D_r), one row per draw
     noise = jax.random.normal(key, (n, residual_size), residual_at_mode.dtype)
 
     def perturbation(standard: Float[Array, " residual"]) -> Float[Array, " state"]:
-        # J_rᵀ z
+        # J_rᵀ v⁽ᵉ⁾
         (pulled,) = pullback(standard)
-        # δ = Ĥ⁻¹ J_rᵀ z
+        # δ⁽ᵉ⁾ = Λ_x∣y⁻¹ J_rᵀ v⁽ᵉ⁾
         return posterior.solver.solve(posterior.precision, pulled)
 
     perturbations = jax.vmap(perturbation)(noise)
-    # x = x̂ + δ
+    # x⁽ᵉ⁾ = x̂ + δ⁽ᵉ⁾
     return posterior.mode + perturbations
