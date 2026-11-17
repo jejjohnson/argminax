@@ -29,7 +29,7 @@ A retrieval is not finished when the optimiser stops. argminax finds $`\hat{\mat
 J(\mathbf{x}) = \frac{1}{2} (\mathbf{y} - F(\mathbf{x}))^\top \mathbf{S}_\varepsilon^{-1} (\mathbf{y} - F(\mathbf{x})) + \frac{1}{2} (\mathbf{x} - \mathbf{x}_a)^\top \mathbf{S}_a^{-1} (\mathbf{x} - \mathbf{x}_a),
 ```
 
-and the curvature at the minimum is $`\hat{\mathbf{S}} = \hat{\mathbf{H}}^{-1}`$, with $`\hat{\mathbf{H}}`$ the Gauss–Newton Hessian of $`J`$ at $`\hat{\mathbf{x}}`$. The sharper the valley, the narrower the Gaussian under it, which is the picture in the logo.
+and the curvature at the minimum is $`\hat{\mathbf{S}} = \hat{\mathbf{H}}^{-1}`$, with $`\hat{\mathbf{H}}`$ the Gauss–Newton Hessian of $`J`$ at $`\hat{\mathbf{x}}`$. The logo is that picture: iterates descending to the minimum of a cost, and the covariance ellipse they land in.
 
 argminax extends optimistix as gaussx extends lineax: its solvers are optimistix solvers and its adjoints are optimistix adjoints, so `optx.minimise` and `optx.least_squares` keep working, and the curvature it returns is a gaussx operator that is never formed densely.
 

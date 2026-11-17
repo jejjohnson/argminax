@@ -1,16 +1,16 @@
 """Draw argminax's icon and logo: ``icon.svg`` and ``logo-{light,dark}.svg``.
 
-The icon is the whole idea in one picture: the cost J(x) is a valley, its
-minimum x̂ is marked, and the Gaussian under it is the uncertainty there. The
-sharper the valley (the larger the curvature Ĥ), the narrower the Gaussian
-(Ŝ = Ĥ⁻¹). Standard library plus loguru; the tile and wordmark follow the other
-repos of the stack (gaussx, filterax, functax).
+The icon is the whole idea in one picture: iterates descend across the level
+sets of the cost J to its minimum x̂, and the filled ellipse there is the
+uncertainty at the minimum, Ŝ = Ĥ⁻¹. vardax draws data assimilation over a
+window and filterax sequential updates, so the minimisation picture is
+argminax's. Standard library plus loguru; the tile and wordmark follow the
+other repos of the stack (gaussx, filterax, functax).
 Run from the repository root::
 
     uv run --no-project --with loguru python docs/assets/make_assets.py
 """
 
-import math
 from pathlib import Path
 
 from loguru import logger
@@ -30,11 +30,12 @@ THEMES = {
 SANS = "ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif"
 WHITE = "#FFFFFF"
 
-MINIMUM = (64.0, 62.0)  # x̂ on the valley
-LEFT, RIGHT = 24.0, 104.0  # the glyph's horizontal extent
-BASELINE = 100.0  # the zero line of the Gaussian
-PEAK = 78.0  # the Gaussian's top, so its height is BASELINE - PEAK
-SIGMA = 12.0  # the Gaussian's width in tile units
+MINIMUM = (70.0, 70.0)  # x̂, the centre of the level sets
+TILT = -30  # the level sets' tilt in degrees, so the cost couples the two axes
+# (half-axes, stroke opacity) of each level set, outermost first
+LEVEL_SETS = ((44.0, 26.0, 0.35), (28.0, 16.0, 0.5))
+COVARIANCE = (13.0, 7.5)  # the half-axes of Ŝ's ellipse at x̂
+ITERATES = ((24.0, 30.0), (46.0, 34.0), (52.0, 56.0), (64.0, 60.0), (67.0, 67.0))
 
 
 def svg(width: int, height: int, body: str) -> str:
@@ -56,63 +57,51 @@ def tile(gradient_id: str) -> str:
     )
 
 
-def path(
-    points: list[tuple[float, float]],
-    *,
-    width: float,
-    opacity: float = 1.0,
-    close: bool = False,
-    fill_opacity: float | None = None,
-) -> str:
+def path(points: list[tuple[float, float]], *, width: float) -> str:
     commands = [
         f"{'M' if i == 0 else 'L'}{x:.1f} {y:.1f}" for i, (x, y) in enumerate(points)
     ]
-    if close:
-        commands.append("Z")
+    return (
+        f'<path d="{" ".join(commands)}" fill="none" stroke="{WHITE}" '
+        f'stroke-width="{width}" stroke-linecap="round" stroke-linejoin="round"/>'
+    )
+
+
+def ellipse(
+    half_axes: tuple[float, float],
+    *,
+    width: float,
+    opacity: float,
+    fill_opacity: float | None = None,
+) -> str:
+    centre_x, centre_y = MINIMUM
+    radius_x, radius_y = half_axes
     fill = (
         f'fill="{WHITE}" fill-opacity="{fill_opacity}"'
         if fill_opacity is not None
         else 'fill="none"'
     )
     return (
-        f'<path d="{" ".join(commands)}" {fill} stroke="{WHITE}" '
-        f'stroke-width="{width}" stroke-opacity="{opacity}" '
-        'stroke-linecap="round" stroke-linejoin="round"/>'
+        f'<ellipse cx="{centre_x}" cy="{centre_y}" rx="{radius_x}" ry="{radius_y}" '
+        f'transform="rotate({TILT} {centre_x} {centre_y})" {fill} '
+        f'stroke="{WHITE}" stroke-width="{width}" stroke-opacity="{opacity}"/>'
     )
+
+
+def dot(x: float, y: float, radius: float) -> str:
+    return f'<circle cx="{x}" cy="{y}" r="{radius}" fill="{WHITE}"/>'
 
 
 def glyph() -> str:
-    """The cost valley, its minimum, and the Gaussian at the minimum."""
-    centre, bottom = MINIMUM
-    half = (RIGHT - LEFT) / 2
-    steps = 40
-
-    def valley(x: float) -> float:
-        return bottom - 32 * ((x - centre) / half) ** 2
-
-    def bell(x: float) -> float:
-        return BASELINE - (BASELINE - PEAK) * math.exp(
-            -0.5 * ((x - centre) / SIGMA) ** 2
-        )
-
-    xs = [LEFT + (RIGHT - LEFT) * i / steps for i in range(steps + 1)]
-    curve = path([(x, valley(x)) for x in xs], width=5)
-    outline = [(x, bell(x)) for x in xs]
-    area = path(
-        [(LEFT, BASELINE), *outline, (RIGHT, BASELINE)],
-        width=0,
-        close=True,
-        fill_opacity=0.28,
-    )
-    top = path(outline, width=3, opacity=0.9)
-    floor = path([(LEFT, BASELINE), (RIGHT, BASELINE)], width=3, opacity=0.8)
-    drop = (
-        f'<line x1="{centre}" y1="{bottom + 9}" x2="{centre}" y2="{PEAK - 4}" '
-        f'stroke="{WHITE}" stroke-width="2" stroke-opacity="0.7" '
-        'stroke-dasharray="2 4" stroke-linecap="round"/>'
-    )
-    marker = f'<circle cx="{centre}" cy="{bottom}" r="6.5" fill="{WHITE}"/>'
-    return area + floor + top + curve + drop + marker
+    """Level sets of J, the descent to x̂, and the covariance ellipse at x̂."""
+    body = ""
+    for radius_x, radius_y, opacity in LEVEL_SETS:
+        body += ellipse((radius_x, radius_y), width=2.4, opacity=opacity)
+    body += ellipse(COVARIANCE, width=2.8, opacity=0.95, fill_opacity=0.3)
+    body += path([*ITERATES, MINIMUM], width=3.4)
+    for x, y in ITERATES:
+        body += dot(x, y, 3.6)
+    return body + dot(*MINIMUM, 5.5)
 
 
 def icon() -> str:
