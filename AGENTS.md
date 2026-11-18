@@ -21,7 +21,7 @@ It is one package, `src/argminax/`. Logic lives in `argminax._src.<module>`, and
 | `adjoint` | `KStep` and `OneStep` adjoints for a minimiser stopped early; `to_optimistix_adjoint` | Wave 1 (#15, #16) |
 | `curvature` | Gauss–Newton curvature and the Laplace covariance Ŝ as gaussx operators; their low-rank and diagonal forms; perturbation sampling | Wave 1 (#17, #18) |
 | `diagnose` | the averaging kernel, degrees of freedom for signal, information content, evidence at the minimum, the prior-precision search | Wave 2 (#20, #21) |
-| `blr` | the Bayesian learning rule as optax `GradientTransformation`s that carry a Gaussian over the parameters in their state: `blr_diagonal`, `blr_full_rank`, `blr_low_rank`, `newton`, `ivon` | Wave 5 (#59 to #62) |
+| `blr` | the Bayesian learning rule as optax `GradientTransformation`s that carry a Gaussian over the parameters in their state: `blr_diagonal`, `blr_full_rank`, `blr_low_rank`, `newton`, `ivon`; `blr_posterior` reads any of their states as a `Laplace` | Wave 5 (#59 to #63) |
 | `solve` | `GaussNewtonCG` (Gauss–Newton and Levenberg–Marquardt with an inner CG), `dual_solve`, `laplace_mode`, positivity and bounds by reparametrisation | Wave 3 (#23 to #26) |
 
 `curvature` sits below `diagnose`, which reads the operators it builds; `adjoint` and `solve` sit beside `curvature`, and none of the four imports `diagnose`. `blr` may import `curvature` and nothing else in the package, and no other module imports `blr`.
@@ -74,6 +74,7 @@ Before writing a helper, a solver, an operator or a diagnostic, find out whether
 | A curvature name (`"ggn"`, `"identity"`) or callable turned into C(μ, g), or into a factor G with C = G Gᵀ | `resolve_curvature`, `resolve_curvature_factor` and `psd_factor` in `argminax._src.blr._curvature` |
 | A precision that is a diagonal plus a low-rank factor, and a solve with it | `gaussx.low_rank_plus_diag(d, U, psd=True)` and `gaussx.solve`, which uses the Woodbury identity |
 | Newton's method inside an optax loop | `argminax.blr.newton`; for a solve to a tolerance, `argminax.solve.GaussNewtonCG` or an optimistix solver |
+| The posterior of an optimiser state (a mean and a covariance, a sampler, a variance) | `argminax.blr.blr_posterior`, which returns a `Laplace`; then `Laplace.sample`, `marginal_variance` and `argminax.diagnose` |
 | An Adam-like optimiser that also gives a variance | `argminax.blr.blr_diagonal`, `argminax.blr.ivon` |
 | An optax import, a step-size schedule lookup or an option check in a transform | `require_optax`, `step_size` and the `require_*` checks in `argminax._src.blr._optax` |
 | Differentiating through a converged minimum | `optx.ImplicitAdjoint`; argminax adds `KStep` and `OneStep` only for a solver stopped early (Wave 1, #15) |
