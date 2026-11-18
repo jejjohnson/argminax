@@ -8,6 +8,14 @@ They need optax, which comes with the `optax` extra:
 pip install "argminax[optax] @ git+https://github.com/jejjohnson/argminax.git"
 ```
 
+```{figure} https://raw.githubusercontent.com/jejjohnson/geostack/main/docs/images/libraries/argminax_blr/argminax_blr.png
+:alt: argminax.blr: a plain optax loop passes the gradient of the cost to a Bayesian-learning-rule transform for the diagonal, low-rank or full-rank family; the optimiser state holds the precision and the natural mean, anchored by the prior; blr_posterior reads the Gaussian out as a Laplace for sampling
+:width: 100%
+:label: fig-blr-overview
+
+Train with optax, read off a posterior. The schematic is kept in [geostack](https://github.com/jejjohnson/geostack/tree/main/docs/images/libraries/argminax_blr) with the stack's other library schematics.
+```
+
 ## The rule
 
 ### Notation
