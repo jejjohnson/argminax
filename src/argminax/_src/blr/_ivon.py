@@ -91,7 +91,7 @@ def ivon(
         weight_decay: The weight decay λ > 0, which is also the prior
             precision.
         hess_init: The starting value of h, at least 0.
-        clip_radius: The radius r of the clip on each parameter's step.
+        clip_radius: The radius r ≥ 0 of the clip on each parameter's step.
         ess: The effective sample size N > 0; the size of the training set
             for a calibrated variance, 1 to use IVON as an optimiser only.
 
@@ -102,8 +102,8 @@ def ivon(
 
     Raises:
         ValidationError: If ``weight_decay`` or ``ess`` is not positive,
-            ``hess_init`` is negative, or ``beta1`` or ``beta2`` is outside
-            [0, 1).
+            ``hess_init`` or ``clip_radius`` is negative, or ``beta1`` or
+            ``beta2`` is outside [0, 1).
         MissingExtraError: If optax is not installed.
 
     Examples:
@@ -141,6 +141,7 @@ def ivon(
     # h ≥ 0 at the start and N > 0 keep h ≥ 0, so the precision h + λ stays positive
     require_non_negative(hess_init, "hess_init")
     require_positive(ess, "ess")
+    require_non_negative(clip_radius, "clip_radius")
     optax = require_optax()
 
     def init_fn(params: PyTree[Float[Array, "*state"]]) -> IVONState:

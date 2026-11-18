@@ -169,6 +169,17 @@ def test_jit_and_scan_agree_with_an_eager_loop() -> None:
     np.testing.assert_allclose(scanned, eager, rtol=1e-10)
 
 
+@pytest.mark.parametrize("prior_mean", [jnp.zeros(1), jnp.zeros(2), 0.0])
+def test_prior_mean_of_another_shape_is_rejected_not_broadcast(prior_mean) -> None:
+    optimiser = blr_full_rank(0.1, prior_mean=prior_mean)
+    with pytest.raises(ValidationError, match="prior_mean"):
+        optimiser.init(jnp.zeros(3))
+    # a state built by another transform reaches update without this init
+    state = blr_full_rank(0.1).init(jnp.zeros(3))
+    with pytest.raises(ValidationError, match="prior_mean"):
+        optimiser.update(jnp.ones(3), state)
+
+
 def test_float32_parameters_stay_float32() -> None:
     theta = jnp.ones(3, jnp.float32)
     optimiser = blr_full_rank(0.1, prior_mean=jnp.zeros(3))
