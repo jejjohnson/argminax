@@ -34,13 +34,17 @@ Everything in argminax is about one object, the minimiser of a cost as a functio
 
 $$\hat{\vect{x}}(\gvect{\theta}) = \mathrm{argmin}_{\vect{x}} \ \mathcal{J}(\vect{x}; \gvect{\theta})$$
 
-$\vect{x} \in \mathbb{R}^{D_x}$ is the state we solve for, and $\gvect{\theta} \in \mathbb{R}^{D_\theta}$ is everything that went into the cost and stays fixed during the solve: the measurement, the prior, the covariances, the parameters of the forward model. $\mathcal{J}$ is a scalar cost, twice differentiable, which we read as a negative log posterior, so its Hessian at the minimum is the inverse of the Laplace covariance $\gmat{\Sigma}_{x \mid y} \in \mathbb{R}^{D_x \times D_x}$. A solver gives one value of $\hat{\vect{x}}$; argminax treats it as a function of $\gvect{\theta}$ and answers three questions about it.
+$\vect{x} \in \mathbb{R}^{D_x}$ is the state we solve for, and $\gvect{\theta} \in \mathbb{R}^{D_\theta}$ is everything that went into the cost and stays fixed during the solve: the measurement, the prior, the covariances, the parameters of the forward model. $\mathcal{J}$ is a scalar cost, twice differentiable, which we read as a negative log posterior with a prior of covariance $\gmat{\Sigma}_x$, so its Hessian at the minimum is the inverse of the Laplace covariance $\gmat{\Sigma}_{x \mid y} \in \mathbb{R}^{D_x \times D_x}$. A solver gives one value of $\hat{\vect{x}}$; argminax treats it as a function of $\gvect{\theta}$ and answers five questions about it.
 
 | Question | Equation | Module |
 |---|---|---|
 | Where is the minimum? | $\nabla_{\vect{x}} \mathcal{J}(\hat{\vect{x}}; \gvect{\theta}) = \vect{0}$ | `argminax.solve`, or any optimistix solver |
-| How sharp is it? | $\gmat{\Sigma}_{x \mid y}^{-1} = \nabla^2_{\vect{x}} \mathcal{J}(\hat{\vect{x}}; \gvect{\theta})$ | `argminax.curvature`, `argminax.diagnose` |
+| How sharp is it? | $\gmat{\Sigma}_{x \mid y}^{-1} = \nabla^2_{\vect{x}} \mathcal{J}(\hat{\vect{x}}; \gvect{\theta})$ | `argminax.curvature` |
+| How much came from the measurement? | $d_s = \mathrm{tr}(\mat{I} - \gmat{\Sigma}_{x \mid y} \gmat{\Sigma}_x^{-1})$ | `argminax.diagnose` |
 | How does it move when $\gvect{\theta}$ moves? | $\gmat{\Sigma}_{x \mid y}^{-1} \partial_{\gvect{\theta}} \hat{\vect{x}} = -\nabla^2_{\vect{x}\gvect{\theta}} \mathcal{J}(\hat{\vect{x}}; \gvect{\theta})$ | `optx.ImplicitAdjoint`, `argminax.adjoint` |
+| What Gaussian does training leave? | $\mathbb{E}_q[\nabla_{\vect{x}} \mathcal{J}] = \vect{0}, \ \gmat{\Lambda} = \mathbb{E}_q[\nabla^2_{\vect{x}} \mathcal{J}]$ for $q = \mathcal{N}(\gvect{\mu}, \gmat{\Lambda}^{-1})$ | `argminax.blr` |
+
+The third row counts the directions the measurement decided: $d_s$ is near 0 when the prior decides everything and approaches $D_x$ when the measurement does. The fifth row is the fixed point of the Bayesian learning rule (Khan and Rue, 2023), and with the gradient and the exact curvature evaluated at the mean it is the first two rows again, $\gvect{\mu} = \hat{\vect{x}}$ and $\gmat{\Lambda} = \gmat{\Sigma}_{x \mid y}^{-1}$ (see [During training](#during-training)).
 
 ### Implicit differentiation
 
@@ -92,7 +96,7 @@ For the retrieval cost, the residuals are whitened by the two covariances, $\vec
 
 ## A first retrieval
 
-Three unknowns from five noisy measurements, with the forward model $h(\vect{x}) = \mat{W} \tanh(\vect{x})$ for a fixed $\mat{W} \in \mathbb{R}^{D_y \times D_x}$, the prior $\mathcal{N}(\vect{0}, \sigma_x^2 \mat{I})$ and the measurement error $\gmat{\Sigma}_\varepsilon = \sigma_\varepsilon^2 \mat{I}$. The fixed inputs are $\gvect{\theta} = (\vect{y}, \log \sigma_x)$, the measurement and the log of the prior's width. The steps are the three questions in order (solve for $\hat{\vect{x}}(\gvect{\theta})$, read the uncertainty off the curvature, and differentiate $\hat{\vect{x}}$ with respect to $\gvect{\theta}$), and then two things the derivative is for.
+Three unknowns from five noisy measurements, with the forward model $h(\vect{x}) = \mat{W} \tanh(\vect{x})$ for a fixed $\mat{W} \in \mathbb{R}^{D_y \times D_x}$, the prior $\mathcal{N}(\vect{0}, \sigma_x^2 \mat{I})$ and the measurement error $\gmat{\Sigma}_\varepsilon = \sigma_\varepsilon^2 \mat{I}$. The fixed inputs are $\gvect{\theta} = (\vect{y}, \log \sigma_x)$, the measurement and the log of the prior's width. The steps are the first four questions in order (solve for $\hat{\vect{x}}(\gvect{\theta})$, read the uncertainty off the curvature, count how much came from the measurement, and differentiate $\hat{\vect{x}}$ with respect to $\gvect{\theta}$), and then two things the derivative is for.
 
 ```python
 import einx
@@ -169,11 +173,13 @@ posterior = gauss_newton(residuals, x_hat, theta)
 # today (argminax)
 # √diag(Σ_x∣y)
 posterior_std = jnp.sqrt(marginal_variance(posterior))  # → (D_x,)
+
+# --- 3. How much came from the measurement? ---
 # today (argminax)
 # dₛ = tr J_x̂, with J_x̂ = I − Σ_x∣y Σ_x⁻¹ and Σ_x = I here
 dofs = degrees_of_freedom(averaging_kernel(posterior)).value  # → ()
 
-# --- 3. How does it move when θ moves? ---
+# --- 4. How does it move when θ moves? ---
 # today (jax)
 # ∂x̂/∂θ = −Σ_x∣y ∇²_xθ 𝒥, one linear solve per direction
 gain, dx_dlog_prior_std = jax.jacobian(retrieve)(theta)  # (D_x, D_y), (D_x,)

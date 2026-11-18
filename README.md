@@ -61,21 +61,27 @@ None of it is a new framework. The solvers of argminax are [`optimistix`](https:
 - 🧠 **Bayesian optimisers for optax**: the Bayesian learning rule (Khan and Rue, 2023) as optax `GradientTransformation`s, from a diagonal Gaussian for any parameter pytree (`blr_diagonal`, `ivon`) to full-rank and low-rank ones, whose state reads out as the same Laplace posterior.
 - ✅ **Tested against closed forms**: linear-Gaussian closed forms, SciPy and finite differences, in double precision.
 
-## 📐 Three questions about one minimiser
+## 📐 Five questions about one minimiser
 
-We read $`\mathcal{J}`$ as a negative log posterior, so the Hessian at the minimum is the inverse of the Laplace covariance $`\boldsymbol{\Sigma}_{x \mid y} \in \mathbb{R}^{D_x \times D_x}`$.
+We read $`\mathcal{J}`$ as a negative log posterior and write $`\boldsymbol{\Sigma}_x`$ for the covariance of its prior, so the Hessian at the minimum is the inverse of the Laplace covariance $`\boldsymbol{\Sigma}_{x \mid y} \in \mathbb{R}^{D_x \times D_x}`$.
 
 | Question | Equation | Module |
 |---|---|---|
 | Where is the minimum? | $`\nabla_{\mathbf{x}} \mathcal{J}(\hat{\mathbf{x}}; \boldsymbol{\theta}) = \mathbf{0}`$ | `argminax.solve`, or any optimistix solver |
-| How sharp is it? | $`\boldsymbol{\Sigma}_{x \mid y}^{-1} = \nabla^2_{\mathbf{x}} \mathcal{J}(\hat{\mathbf{x}}; \boldsymbol{\theta})`$ | `argminax.curvature`, `argminax.diagnose` |
+| How sharp is it? | $`\boldsymbol{\Sigma}_{x \mid y}^{-1} = \nabla^2_{\mathbf{x}} \mathcal{J}(\hat{\mathbf{x}}; \boldsymbol{\theta})`$ | `argminax.curvature` |
+| How much came from the measurement? | $`d_s = \mathrm{tr}(\mathbf{I} - \boldsymbol{\Sigma}_{x \mid y} \boldsymbol{\Sigma}_x^{-1})`$ | `argminax.diagnose` |
 | How does it move when $`\boldsymbol{\theta}`$ moves? | $`\boldsymbol{\Sigma}_{x \mid y}^{-1} \partial_{\boldsymbol{\theta}} \hat{\mathbf{x}} = -\nabla^2_{\mathbf{x}\boldsymbol{\theta}} \mathcal{J}(\hat{\mathbf{x}}; \boldsymbol{\theta})`$ | `optx.ImplicitAdjoint`, `argminax.adjoint` |
+| What Gaussian does training leave? | $`\mathbb{E}_q[\nabla_{\mathbf{x}} \mathcal{J}] = \mathbf{0}, \ \boldsymbol{\Lambda} = \mathbb{E}_q[\nabla^2_{\mathbf{x}} \mathcal{J}]`$ for $`q = \mathcal{N}(\boldsymbol{\mu}, \boldsymbol{\Lambda}^{-1})`$ | `argminax.blr` |
 
-The third row is implicit differentiation. Differentiating the first row with respect to $`\boldsymbol{\theta}`$ gives a linear system in the same Hessian (Blondel et al., 2022), so the $`D_x \times D_\theta`$ Jacobian $`\partial_{\boldsymbol{\theta}} \hat{\mathbf{x}}`$ of a converged solve costs one more linear solve per direction, whatever the solver did to get there and however many iterations it took. This is what makes a minimiser a layer: an outer loss $`\mathcal{L}(\hat{\mathbf{x}}(\boldsymbol{\theta}))`$ can be minimised over $`\boldsymbol{\theta}`$ by gradient descent (bilevel optimisation, hyperparameter learning, learned 4D-Var), with
+The third row compares the posterior with the prior. The trace counts the directions the measurement decided, so $`d_s`$ is near 0 when the prior decides everything and approaches $`D_x`$ when the measurement does; `argminax.diagnose` also gives the averaging kernel, the information content and the evidence.
+
+The fourth row is implicit differentiation. Differentiating the first row with respect to $`\boldsymbol{\theta}`$ gives a linear system in the same Hessian (Blondel et al., 2022), so the $`D_x \times D_\theta`$ Jacobian $`\partial_{\boldsymbol{\theta}} \hat{\mathbf{x}}`$ of a converged solve costs one more linear solve per direction, whatever the solver did to get there and however many iterations it took. This is what makes a minimiser a layer: an outer loss $`\mathcal{L}(\hat{\mathbf{x}}(\boldsymbol{\theta}))`$ can be minimised over $`\boldsymbol{\theta}`$ by gradient descent (bilevel optimisation, hyperparameter learning, learned 4D-Var), with
 
 ```math
 \frac{\mathrm{d}\mathcal{L}}{\mathrm{d}\boldsymbol{\theta}} = \left(\partial_{\boldsymbol{\theta}} \hat{\mathbf{x}}\right)^\top \nabla_{\mathbf{x}} \mathcal{L}
 ```
+
+The fifth row is for a model that is trained rather than solved. The Bayesian learning rule moves a Gaussian $`q`$ over $`\mathbf{x}`$ with every optax step, and the equation in the table is its fixed point (Khan and Rue, 2023). With the gradient and the curvature evaluated at the mean, the usual way to run an optimiser, and the exact curvature, that fixed point is the first two rows again: $`\boldsymbol{\mu} = \hat{\mathbf{x}}`$ and $`\boldsymbol{\Lambda} = \boldsymbol{\Sigma}_{x \mid y}^{-1}`$, which `blr_posterior` reads out as the same Laplace posterior the other modules use.
 
 The cost we minimise most often is the retrieval cost. For a measurement $`\mathbf{y} \in \mathbb{R}^{D_y}`$, a forward model $`h: \mathbb{R}^{D_x} \to \mathbb{R}^{D_y}`$, a prior $`\mathcal{N}(\boldsymbol{\mu}_x, \boldsymbol{\Sigma}_x)`$ and a measurement-error covariance $`\boldsymbol{\Sigma}_\varepsilon \in \mathbb{R}^{D_y \times D_y}`$,
 
@@ -101,7 +107,7 @@ pip install "argminax[optax] @ git+https://github.com/jejjohnson/argminax.git"
 
 ## 🛰️ Quickstart: a nonlinear retrieval
 
-Three unknowns from five noisy measurements, with the forward model $`h(\mathbf{x}) = \mathbf{W} \tanh(\mathbf{x})`$ for a fixed $`\mathbf{W} \in \mathbb{R}^{D_y \times D_x}`$, the prior $`\mathcal{N}(\mathbf{0}, \sigma_x^2 \mathbf{I})`$ and the measurement error $`\boldsymbol{\Sigma}_\varepsilon = \sigma_\varepsilon^2 \mathbf{I}`$. The fixed inputs are $`\boldsymbol{\theta} = (\mathbf{y}, \log \sigma_x)`$, and the steps are the three questions in order.
+Three unknowns from five noisy measurements, with the forward model $`h(\mathbf{x}) = \mathbf{W} \tanh(\mathbf{x})`$ for a fixed $`\mathbf{W} \in \mathbb{R}^{D_y \times D_x}`$, the prior $`\mathcal{N}(\mathbf{0}, \sigma_x^2 \mathbf{I})`$ and the measurement error $`\boldsymbol{\Sigma}_\varepsilon = \sigma_\varepsilon^2 \mathbf{I}`$. The fixed inputs are $`\boldsymbol{\theta} = (\mathbf{y}, \log \sigma_x)`$, and the steps are the first four questions in order.
 
 ```python
 import einx
@@ -178,11 +184,13 @@ posterior = gauss_newton(residuals, x_hat, theta)
 # today (argminax)
 # √diag(Σ_x∣y)
 posterior_std = jnp.sqrt(marginal_variance(posterior))  # → (D_x,)
+
+# 3. How much came from the measurement?
 # today (argminax)
 # dₛ = tr J_x̂, with J_x̂ = I − Σ_x∣y Σ_x⁻¹ and Σ_x = I here
 dofs = degrees_of_freedom(averaging_kernel(posterior)).value  # → ()
 
-# 3. How does it move when θ moves?
+# 4. How does it move when θ moves?
 # today (jax)
 # ∂x̂/∂θ = −Σ_x∣y ∇²_xθ 𝒥, one linear solve per direction
 gain, dx_dlog_prior_std = jax.jacobian(retrieve)(theta)  # (D_x, D_y), (D_x,)
@@ -206,7 +214,7 @@ The [quickstart](https://jejjohnson.github.io/argminax/quickstart/) takes this r
 
 ## 📖 Documentation
 
-- **[Quickstart](https://jejjohnson.github.io/argminax/quickstart/)**: the three questions derived, the calling convention, double precision, the worked retrieval in full and the same Gaussian during training.
+- **[Quickstart](https://jejjohnson.github.io/argminax/quickstart/)**: the five questions derived, the calling convention, double precision, the worked retrieval in full and the same Gaussian during training.
 - **[The Bayesian learning rule](https://jejjohnson.github.io/argminax/blr/)**: the update every `argminax.blr` transform shares, what each one stores and costs, and what to watch numerically.
 - **[BLR walkthrough](https://jejjohnson.github.io/argminax/blr-walkthrough/)**: an executed notebook that fits a line three ways and compares each with the exact posterior.
 - **[API reference](https://jejjohnson.github.io/argminax/reference/)**: every public symbol, generated from the docstrings.
