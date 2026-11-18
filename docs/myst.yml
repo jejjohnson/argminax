@@ -43,6 +43,9 @@ project:
     - title: Mathematical reference
       children:
         - file: math/bayesian_learning_rule.md
+    - title: Design
+      children:
+        - file: design/architecture.md
     - title: Project
       children:
         - file: contributing.md
