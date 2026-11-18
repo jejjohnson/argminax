@@ -23,13 +23,31 @@
 
 **Optimisation with uncertainty at the minimum for JAX: solvers, curvature, retrieval diagnostics and minimiser adjoints on optimistix and gaussx.**
 
-A retrieval is not finished when the optimiser stops. argminax finds $`\hat{\mathbf{x}} = \arg\min_{\mathbf{x}} J(\mathbf{x})`$, then says how sharp that minimum is (the posterior covariance $`\hat{\mathbf{S}}`$, the averaging kernel $`\mathbf{A}`$, the degrees of freedom for signal) and how $`\hat{\mathbf{x}}`$ depends on what went in. For a measurement $`\mathbf{y}`$, forward model $`F`$, prior state $`\mathbf{x}_a`$ and covariances $`\mathbf{S}_\varepsilon`$ and $`\mathbf{S}_a`$, the cost it minimises most often is
+Everything in argminax is about one object, the minimiser of a cost as a function of what the cost was built from:
 
 ```math
-J(\mathbf{x}) = \frac{1}{2} (\mathbf{y} - F(\mathbf{x}))^\top \mathbf{S}_\varepsilon^{-1} (\mathbf{y} - F(\mathbf{x})) + \frac{1}{2} (\mathbf{x} - \mathbf{x}_a)^\top \mathbf{S}_a^{-1} (\mathbf{x} - \mathbf{x}_a),
+\hat{\mathbf{x}}(\boldsymbol{\theta}) = \arg\min_{\mathbf{x}} J(\mathbf{x}, \boldsymbol{\theta})
 ```
 
-and the curvature at the minimum is $`\hat{\mathbf{S}} = \hat{\mathbf{H}}^{-1}`$, with $`\hat{\mathbf{H}}`$ the Gauss–Newton Hessian of $`J`$ at $`\hat{\mathbf{x}}`$. The logo is that picture: iterates descending to the minimum of a cost, and the covariance ellipse they land in.
+$`\mathbf{x}`$ is the state we solve for and $`\boldsymbol{\theta}`$ is everything that went into the cost and stays fixed during the solve: the measurement, the prior, the covariances, the parameters of the forward model. A solver gives one value of $`\hat{\mathbf{x}}`$. argminax treats it as a function, and answers three questions about it.
+
+| Question | Equation | Module |
+|---|---|---|
+| Where is the minimum? | $`\nabla_{\mathbf{x}} J(\hat{\mathbf{x}}, \boldsymbol{\theta}) = \mathbf{0}`$ | `argminax.solve`, or any optimistix solver |
+| How sharp is it? | $`\hat{\mathbf{H}} = \nabla^2_{\mathbf{x}} J(\hat{\mathbf{x}}, \boldsymbol{\theta})`$ and $`\hat{\mathbf{S}} = \hat{\mathbf{H}}^{-1}`$ | `argminax.curvature`, `argminax.diagnose` |
+| How does it move when $`\boldsymbol{\theta}`$ moves? | $`\hat{\mathbf{H}} \partial_{\boldsymbol{\theta}} \hat{\mathbf{x}} = -\partial_{\boldsymbol{\theta}} \nabla_{\mathbf{x}} J(\hat{\mathbf{x}}, \boldsymbol{\theta})`$ | `optx.ImplicitAdjoint`, `argminax.adjoint` |
+
+The third row is implicit differentiation: differentiate the first row with respect to $`\boldsymbol{\theta}`$ and the implicit function theorem gives a linear system in the Hessian $`\hat{\mathbf{H}}`$ ([Blondel et al., 2022](https://arxiv.org/abs/2105.15183)). So the derivative of a converged solve costs one more linear solve, whatever the solver did to get there and however many iterations it took, and the same matrix answers the second and the third question. When $`J`$ is a negative log posterior, its inverse $`\hat{\mathbf{S}}`$ is the covariance of the Laplace approximation, and the derivative with respect to the measurement is the gain matrix of retrieval theory. That is what makes a minimiser a layer: an outer cost $`L(\hat{\mathbf{x}}(\boldsymbol{\theta}))`$ can be minimised over $`\boldsymbol{\theta}`$ by gradient descent (bilevel optimisation, hyperparameter learning, learned 4D-Var), with $`\nabla_{\boldsymbol{\theta}} L = (\partial_{\boldsymbol{\theta}} \hat{\mathbf{x}})^\top \nabla_{\mathbf{x}} L`$.
+
+The cost argminax minimises most often is the retrieval cost. For a measurement $`\mathbf{y}`$, forward model $`F`$, prior state $`\mathbf{x}_a`$ and covariances $`\mathbf{S}_\varepsilon`$ and $`\mathbf{S}_a`$,
+
+```math
+J(\mathbf{x}, \boldsymbol{\theta}) = \frac{1}{2} (\mathbf{y} - F(\mathbf{x}))^\top \mathbf{S}_\varepsilon^{-1} (\mathbf{y} - F(\mathbf{x})) + \frac{1}{2} (\mathbf{x} - \mathbf{x}_a)^\top \mathbf{S}_a^{-1} (\mathbf{x} - \mathbf{x}_a)
+```
+
+with $`\boldsymbol{\theta} = (\mathbf{y}, \mathbf{x}_a, \mathbf{S}_\varepsilon, \mathbf{S}_a)`$ and whatever parameters $`F`$ has. Here $`\hat{\mathbf{H}}`$ is taken in its Gauss–Newton form, $`\hat{\mathbf{S}}`$ is the posterior covariance, and the averaging kernel $`\mathbf{A}`$ and the degrees of freedom for signal follow from it. The logo is that picture: iterates descending to the minimum of a cost, and the covariance ellipse they land in.
+
+Two things go beyond the table. A solver stopped early has no stationarity condition to differentiate, so `argminax.adjoint` differentiates through its last few iterations (`KStep`, `OneStep`). And a model in training never reaches the minimum, so `argminax.blr` carries the Gaussian $`\mathcal{N}(\hat{\mathbf{x}}, \hat{\mathbf{S}})`$ along as an optax transform (the Bayesian learning rule).
 
 argminax extends optimistix as gaussx extends lineax: its solvers are optimistix solvers and its adjoints are optimistix adjoints, so `optx.minimise` and `optx.least_squares` keep working, and the curvature it returns is a gaussx operator that is never formed densely.
 
@@ -53,7 +71,7 @@ pip install "argminax @ git+https://github.com/jejjohnson/argminax.git"
 
 ## Quick Start
 
-A nonlinear retrieval of three unknowns from five measurements: solve for $`\hat{\mathbf{x}}`$, read the uncertainty off the curvature, count how much the measurement told us, and differentiate the answer with respect to the data.
+A nonlinear retrieval of three unknowns from five measurements, with $`\boldsymbol{\theta}`$ the measurement and the width of the prior. The three questions in order: solve for $`\hat{\mathbf{x}}(\boldsymbol{\theta})`$, read the uncertainty off the curvature, and differentiate $`\hat{\mathbf{x}}`$ with respect to $`\boldsymbol{\theta}`$.
 
 ```python
 import jax
@@ -79,51 +97,68 @@ K: Float[Array, "5 3"] = jnp.array(
     ]
 )
 prior_mean: Float[Array, " 3"] = jnp.zeros(3)
-noise_std, prior_std = 0.3, 1.0
+noise_std = 0.3
 
 
 def forward(x: Float[Array, " 3"]) -> Float[Array, " 5"]:
     return K @ jnp.tanh(x)  # (5,)
 
 
-def residuals(x, y):
-    # r = (Sε^(-1/2) (y − F(x)), Sₐ^(-1/2) (x − xₐ)), so J(x) = ½ ‖r‖²
-    return (y - forward(x)) / noise_std, (x - prior_mean) / prior_std
+def residuals(x, theta):
+    # θ = (y, log σₐ): the measurement and the log of the prior's width
+    # r = ((y − F(x)) / σε, (x − xₐ) / σₐ), so J(x, θ) = ½ ‖r‖²
+    y, log_prior_std = theta
+    return (y - forward(x)) / noise_std, (x - prior_mean) / jnp.exp(log_prior_std)
 
 
-y: Float[Array, " 5"] = forward(jnp.array([0.8, -0.4, 0.3])) + 0.05  # (5,)
+x_ref: Float[Array, " 3"] = jnp.array([0.8, -0.4, 0.3])
+y: Float[Array, " 5"] = forward(x_ref) + 0.05  # (5,)
+theta = (y, jnp.asarray(0.0))
 
-# x̂ = argmin J(x): an optimistix least-squares solve, matrix-free inside.
+# --- 1. Where is the minimum?  x̂(θ) = argmin J(x, θ) ---
 solver = GaussNewtonCG(rtol=1e-8, atol=1e-8)
-solution = optx.least_squares(residuals, solver, prior_mean, args=y)
-x_hat: Float[Array, " 3"] = solution.value  # (3,)  [0.667, -0.238, 0.271]
 
-# How sharp is the minimum? Ŝ = Ĥ⁻¹ with Ĥ = Jᵣᵀ Jᵣ at x̂.
-posterior = gauss_newton(residuals, x_hat, y)
+
+def retrieve(theta):
+    # an optimistix least-squares solve, matrix-free inside
+    return optx.least_squares(residuals, solver, prior_mean, args=theta).value
+
+
+x_hat: Float[Array, " 3"] = retrieve(theta)  # (3,)  [0.667, -0.238, 0.271]
+
+# --- 2. How sharp is it?  Ŝ = Ĥ⁻¹ with Ĥ = Jᵣᵀ Jᵣ at x̂ ---
+posterior = gauss_newton(residuals, x_hat, theta)
 covariance = posterior.covariance().as_matrix()  # (3, 3)
 std = jnp.sqrt(jnp.diag(covariance))  # (3,)  [0.427, 0.344, 0.340]
 
 # How much of x̂ came from the measurement? dₛ = tr A with A = I − Ŝ Sₐ⁻¹.
 dofs = degrees_of_freedom(averaging_kernel(posterior))  # dₛ ≈ 2.58 of 3
 
+# --- 3. How does it move with θ?  Ĥ ∂x̂/∂θ = −∂_θ ∇ₓJ ---
+# One more linear solve per direction, not a pass through every iteration.
+dx_dy, dx_dlog_std = jax.jacobian(retrieve)(theta)
+dx_dy.shape  # (3, 5), the gain: how x̂ answers each measurement
+dx_dlog_std  # (3,)  [0.247, -0.175, 0.103], how x̂ answers a wider prior
 
-# x̂ is differentiable in the data: one more linear solve, not a pass through every iteration.
-def retrieve(y):
-    return optx.least_squares(residuals, solver, prior_mean, args=y).value
+
+# The minimiser as a layer: an outer cost of x̂(θ), and its gradient in θ.
+def outer_cost(theta):
+    # L(θ) = ‖x̂(θ) − x_ref‖²
+    return jnp.sum((retrieve(theta) - x_ref) ** 2)
 
 
-dx_dy = jax.jacobian(retrieve)(y)  # (3, 5)
+_, dcost_dlog_std = jax.grad(outer_cost)(theta)  # −0.128: widen the prior
 
-# A swath of pixels is one vmap.
+# A swath of pixels is one vmap over θ.
 batch = jnp.stack([y, y + 0.1, y - 0.1])  # (3, 5)
-x_hats = jax.jit(jax.vmap(retrieve))(batch)  # (3, 3)
+x_hats = jax.jit(jax.vmap(lambda y: retrieve((y, 0.0))))(batch)  # (3, 3)
 ```
 
-Nothing here is specific to this model. Swap `forward` for a radiative transfer code, a plume model or a PDE solve, and the same four lines give the retrieval, its covariance, its degrees of freedom and its gradient. The [quickstart](https://jejjohnson.github.io/argminax/quickstart/) adds the calling convention and why to run in double precision.
+Nothing here is specific to this model. Swap `forward` for a radiative transfer code, a plume model or a PDE solve, and the same lines give the retrieval, its covariance, its degrees of freedom and its derivatives. For a forward model that is linear, the two derivatives above are quantities retrieval theory already names: $`\partial_{\mathbf{y}} \hat{\mathbf{x}} = \hat{\mathbf{S}} \mathbf{K}^\top \mathbf{S}_\varepsilon^{-1}`$ is the gain matrix, and the averaging kernel is $`\mathbf{A} = (\partial_{\mathbf{y}} \hat{\mathbf{x}}) \mathbf{K}`$. The [quickstart](https://jejjohnson.github.io/argminax/quickstart/) derives the third question and adds the calling convention and why to run in double precision.
 
 ### During training
 
-The solvers above run to a minimum first. The transforms of `argminax.blr` carry the same Gaussian while they train: each is an optax `GradientTransformation` (the Bayesian learning rule), so it drops into an optax loop, and its state reads out as the `Laplace` object used above. Here a line is fitted to 200 noisy points; the cost is quadratic, so one full-rank step with the exact curvature is the exact posterior.
+The solvers above run to a minimum first. The transforms of `argminax.blr` carry the same Gaussian while they train (the variable they optimise is a model's parameter vector, so it is written $`\boldsymbol{\theta}`$ there, and plays the part of $`\mathbf{x}`$ above): each is an optax `GradientTransformation` (the Bayesian learning rule), so it drops into an optax loop, and its state reads out as the `Laplace` object used above. Here a line is fitted to 200 noisy points; the cost is quadratic, so one full-rank step with the exact curvature is the exact posterior.
 
 ```python
 import lineax as lx
