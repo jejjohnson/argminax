@@ -11,9 +11,11 @@ optax comes with the ``argminax[optax]`` extra.
 |---|---|
 | `blr_diagonal` | a diagonal Gaussian over a parameter pytree, a drop-in for Adam |
 | `blr_full_rank` | a full-rank Gaussian over a flat vector, ending at Laplace |
+| `blr_low_rank` | a diagonal-plus-rank-R precision, O(D_θ R²) a step (SLANG) |
 | `newton` | damped Newton's method, the full-rank rule with step size 1 |
 | `ivon` | IVON: the diagonal rule with momentum, weight decay and a clipped step |
 | `BLRDiagonalState`, `BLRFullRankState` | the states that hold the Gaussian |
+| `BLRLowRankState` | the low-rank state: the diagonal d and the factor U |
 | `IVONState` | IVON's state: its momentum and curvature estimate |
 """
 
@@ -22,9 +24,11 @@ from __future__ import annotations
 from argminax._src.blr import (
     BLRDiagonalState,
     BLRFullRankState,
+    BLRLowRankState,
     IVONState,
     blr_diagonal,
     blr_full_rank,
+    blr_low_rank,
     ivon,
     newton,
 )
@@ -33,9 +37,11 @@ from argminax._src.blr import (
 __all__ = [
     "BLRDiagonalState",
     "BLRFullRankState",
+    "BLRLowRankState",
     "IVONState",
     "blr_diagonal",
     "blr_full_rank",
+    "blr_low_rank",
     "ivon",
     "newton",
 ]

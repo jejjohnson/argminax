@@ -21,7 +21,7 @@ It is one package, `src/argminax/`. Logic lives in `argminax._src.<module>`, and
 | `adjoint` | `KStep` and `OneStep` adjoints for a minimiser stopped early; `to_optimistix_adjoint` | Wave 1 (#15, #16) |
 | `curvature` | Gauss–Newton curvature and the Laplace covariance Ŝ as gaussx operators; their low-rank and diagonal forms; perturbation sampling | Wave 1 (#17, #18) |
 | `diagnose` | the averaging kernel, degrees of freedom for signal, information content, evidence at the minimum, the prior-precision search | Wave 2 (#20, #21) |
-| `blr` | the Bayesian learning rule as optax `GradientTransformation`s that carry a Gaussian over the parameters in their state: `blr_diagonal`, `blr_full_rank`, `newton`, `ivon` | Wave 5 (#59 to #61) |
+| `blr` | the Bayesian learning rule as optax `GradientTransformation`s that carry a Gaussian over the parameters in their state: `blr_diagonal`, `blr_full_rank`, `blr_low_rank`, `newton`, `ivon` | Wave 5 (#59 to #62) |
 | `solve` | `GaussNewtonCG` (Gauss–Newton and Levenberg–Marquardt with an inner CG), `dual_solve`, `laplace_mode`, positivity and bounds by reparametrisation | Wave 3 (#23 to #26) |
 
 `curvature` sits below `diagnose`, which reads the operators it builds; `adjoint` and `solve` sit beside `curvature`, and none of the four imports `diagnose`. `blr` may import `curvature` and nothing else in the package, and no other module imports `blr`.
@@ -50,7 +50,7 @@ Each foundation brings a rule. Breaking one runs fine on your example and fails 
 | **gaussx** | structured operators, solves, log-determinants and one step's algebra | Curvature is returned as a gaussx operator and never formed densely in library code. |
 | **optax** (the `optax` extra) | the `GradientTransformation` protocol, schedules and `optax.chain` for `argminax.blr` | A transform is an `init` / `update` pair of pure functions; its state is a `NamedTuple` of arrays, as optax states are (the one exception to "results are `eqx.Module`s"), and a step size may be an optax schedule of the step count. |
 | **jaxtyping** | array annotations | Named dims from the shared vocabulary ("House style"): `state` for the optimisation variable x and anything indexed like it, `obs` for observation-space vectors, `residual` for stacked whitened residuals, `member` for Monte Carlo draws and Hutchinson probes, and `*state` for a state of any shape. |
-| **einx** | reductions, contractions and rearranges on dense arrays | No `axis=`, `.T`, `reshape` or `[:, None]` on a dense array; a lineax or gaussx operator keeps its own methods (`.mv`, `.T`) and is never materialised to use einx. |
+| **einx** | reductions, contractions and rearranges on dense arrays | No `axis=`, `.T`, `reshape` or `[:, None]` on a dense array; a lineax or gaussx operator keeps its own methods (`.mv`, `.T`) and is never materialised to use einx. The one exception is an axis that can have size zero, which einx cannot reduce over or concatenate: use `jnp` there with a comment saying so (`argminax._src.blr._low_rank`). |
 | **SciPy, hypothesis** (test group) | references for the nonlinear solvers; drawn problem sizes and seeds | Test oracles, not runtime dependencies: library code never imports them, and a bare install imports argminax without the test group (SciPy is installed anyway, as a dependency of JAX). |
 | **pytest + `--doctest-modules`** | the suite and every docstring `Examples:` block | An example's expected output is what the code prints; a stale example is a failing test. |
 
@@ -71,7 +71,8 @@ Before writing a helper, a solver, an operator or a diagnostic, find out whether
 | A log-determinant | gaussx (`gaussx.logdet` and the structured forms); `matfree` behind the `argminax[matfree]` extra for stochastic Lanczos quadrature |
 | One Newton step | `gaussx.newton_update` |
 | One step of the Bayesian learning rule | `gaussx.blr_diag_update` on the log-joint (the prior folded into the gradient and the Hessian). The full-rank transform writes its two-line step in `argminax._src.blr._full_rank._transform`, because it needs the mean that `gaussx.blr_full_update` solves for and does not return, and an untagged solve for `newton`; its tests pin the step to `gaussx.blr_full_update` |
-| A curvature name (`"ggn"`, `"identity"`) or callable turned into C(μ, g) | `resolve_curvature` in `argminax._src.blr._curvature` |
+| A curvature name (`"ggn"`, `"identity"`) or callable turned into C(μ, g), or into a factor G with C = G Gᵀ | `resolve_curvature`, `resolve_curvature_factor` and `psd_factor` in `argminax._src.blr._curvature` |
+| A precision that is a diagonal plus a low-rank factor, and a solve with it | `gaussx.low_rank_plus_diag(d, U, psd=True)` and `gaussx.solve`, which uses the Woodbury identity |
 | Newton's method inside an optax loop | `argminax.blr.newton`; for a solve to a tolerance, `argminax.solve.GaussNewtonCG` or an optimistix solver |
 | An Adam-like optimiser that also gives a variance | `argminax.blr.blr_diagonal`, `argminax.blr.ivon` |
 | An optax import, a step-size schedule lookup or an option check in a transform | `require_optax`, `step_size` and the `require_*` checks in `argminax._src.blr._optax` |
