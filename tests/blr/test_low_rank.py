@@ -133,6 +133,37 @@ def test_jit_and_scan_agree_with_an_eager_loop() -> None:
     np.testing.assert_allclose(scanned, eager, rtol=1e-10)
 
 
+def _cost_after(scale, optimiser, num_steps):
+    # the cost after ``num_steps`` steps from the start ``scale`` · 1
+    theta = scale * jnp.ones_like(REGRESSION.start)
+    state = optimiser.init(theta)
+    for _ in range(num_steps):
+        updates, state = optimiser.update(jax.grad(REGRESSION.cost)(theta), state)
+        theta = theta + updates
+    return REGRESSION.cost(theta)
+
+
+@pytest.mark.parametrize("rank", [1, 2, REGRESSION.start.shape[0]])
+@pytest.mark.parametrize("num_steps", [1, 3])
+def test_gradient_through_training_from_init_is_finite_and_right(
+    rank, num_steps
+) -> None:
+    # The first factor is [0, …, 0, √α g], whose zero singular values repeat:
+    # the stock SVD derivative is NaN there. Rank 1 truncates from step two,
+    # the full rank never does.
+    optimiser = blr_low_rank(0.1, rank=rank, prior_precision=0.5)
+    reverse = jax.grad(_cost_after)(0.3, optimiser, num_steps)
+    forward = jax.jacfwd(_cost_after)(0.3, optimiser, num_steps)
+    step = 1e-6
+    above = _cost_after(0.3 + step, optimiser, num_steps)
+    below = _cost_after(0.3 - step, optimiser, num_steps)
+    central = (above - below) / (2 * step)
+    assert jnp.isfinite(reverse)
+    np.testing.assert_allclose(reverse, forward, rtol=1e-10)
+    # a central difference of step h is accurate to O(h²) relative
+    np.testing.assert_allclose(reverse, central, rtol=1e-6)
+
+
 def test_float32_parameters_stay_float32() -> None:
     theta = jnp.ones(3, jnp.float32)
     optimiser = blr_low_rank(0.1, rank=2, prior_mean=jnp.zeros(3))
