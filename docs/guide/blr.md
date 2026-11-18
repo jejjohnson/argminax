@@ -74,6 +74,7 @@ The transforms use whatever gradient and curvature they are given. Evaluating th
 | [`blr_low_rank`](xref:api#argminax.blr.blr_low_rank) | diagonal plus a rank-$R$ factor | $O(D_\theta R)$ | $O(D_\theta R^2)$ with a built-in curvature, $O(D_\theta^3)$ with a callable | a flat vector |
 | [`ivon`](xref:api#argminax.blr.ivon) | diagonal | $O(D_\theta)$ | $O(D_\theta)$ | any pytree |
 | [`newton`](xref:api#argminax.blr.newton) | dense | $O(D_\theta^2)$ | $O(D_\theta^3)$ | a flat vector |
+| [`preconditioned_sgd`](xref:api#argminax.blr.preconditioned_sgd) | any operator, given and fixed | that of the operator | one solve with it | a flat vector |
 
 The low-rank cost of $O(D_\theta R^2)$ holds for `"ggn"` and `"identity"`, whose factor has one column or none. A callable returns a dense $(D_\theta, D_\theta)$ matrix, which the transform factors by an eigendecomposition: that step costs $O(D_\theta^3)$ and $O(D_\theta^2)$ of temporary storage whatever the rank, so use a callable there only when $D_\theta$ is small.
 
@@ -92,6 +93,8 @@ So the diagonal of the precision is always what the rule prescribes, and with $R
 **IVON.** A diagonal variant for deep networks (Shen et al., 2024), with momentum $\vect{m}$ on the gradient (averaging rate $\beta_1$), a running curvature estimate $\vect{h}$ (rate $\beta_2$, effective sample size $N$), weight decay $\lambda$ as the prior precision, and a step clipped to a radius $r$. Its Gaussian is $\mathcal{N}(\gvect{\theta}, \mathrm{diag}(\vect{h} + \lambda)^{-1})$ around the current parameters. This implementation uses the squared gradient as its curvature estimate; the paper's IVON uses a reparameterisation-trick Hessian estimate and adds a correction term that keeps $\vect{h}$ positive.
 
 **Newton.** The full-rank rule with $\alpha = 1$, prior precision $\beta$, a zero prior mean and the exact Hessian: $\gvect{\mu}_\theta \leftarrow \gvect{\mu}_\theta - (\beta \mat{I} + \mat{C})^{-1} (\vect{g} + \beta \gvect{\mu}_\theta)$. The Hessian can be indefinite away from a minimum, so the solve does not assume it is positive semidefinite. For a solve that runs to a tolerance, use [`GaussNewtonCG`](xref:api#argminax.solve.GaussNewtonCG) or an optimistix solver.
+
+**A fixed precision.** [`preconditioned_sgd`](xref:api#argminax.blr.preconditioned_sgd) is the mean form with $\gmat{\Lambda}_\theta$ replaced by an operator $\mat{P}$ the caller supplies and that never changes: $\gvect{\theta} \leftarrow \gvect{\theta} - \alpha \mat{P}^{-1} \vect{g}$. It carries no Gaussian (its state is empty), and any prior belongs in the gradient it is given. $\mat{P}$ is a lineax or gaussx operator tagged positive semidefinite, factored once when the transform is built, or solved by its structure. [`scale_by_preconditioner`](xref:api#argminax.blr.scale_by_preconditioner) is the same step without the step size, for an optax chain.
 
 ## A worked example
 
@@ -203,6 +206,23 @@ def step(mean, state, key):
 
 A transform holds no state of its own, so the state of one passes to the next. The update is the change of the mean in either case: add it to the mean, never to the draw.
 
+### A fixed preconditioner helps only where it fixes the conditioning
+
+`preconditioned_sgd` is gradient descent in the coordinates $\vect{z} = \mat{L}^\top \gvect{\theta}$, with $\mat{P} = \mat{L} \mat{L}^\top$, so what decides its speed is the condition number of $\mat{P}^{-1} \mat{H}$, with $\mat{H}$ the Hessian of the cost. A constant step converges on a quadratic cost when $\alpha < 2 / \lambda_{\max}(\mat{P}^{-1} \mat{H})$.
+
+The case it was added for is a few steps on a 4D-Var cost, preconditioned by the Hessian of the 3D-Var cost (Solvik et al., 2025): $\mat{P} = \gmat{\Sigma}_x^{-1} + N_t \mat{H}_h^\top \gmat{\Sigma}_\varepsilon^{-1} \mat{H}_h$, with $\gmat{\Sigma}_x$ the background covariance, $\gmat{\Sigma}_\varepsilon$ the observation-error covariance, $\mat{H}_h$ the Jacobian of the observation operator and $N_t$ the number of observation times. We measured it on one window of Lorenz-96 (36 sites, 18 observed at 3 times, a window of 0.1 time units), with a background covariance $\sigma_x^2 \exp(-d / \ell)$ of correlation length $\ell$ over the circular distance $d$ between sites:
+
+| Background covariance | Condition number of $\mat{H}$ | of $\mat{P}^{-1} \mat{H}$ | Cost after 3 plain steps | after 3 preconditioned steps | Minimum |
+|---|---|---|---|---|---|
+| $\sigma_x^2 \mat{I}$ | 2.36 | 1.94 | 22.644 | 22.651 | 22.641 |
+| $\ell = 1$ | 5.4 | 2.03 | 22.580 | 22.403 | 22.399 |
+| $\ell = 3$ | 19.5 | 1.85 | 22.715 | 21.489 | 21.488 |
+| $\ell = 6$ | 41.4 | 1.67 | 23.102 | 21.130 | 21.130 |
+
+The plain steps use $\alpha = 1 / \lambda_{\max}(\mat{H})$ and the preconditioned ones $\alpha = 1$. With an identity background covariance the cost is already well conditioned and the preconditioner buys nothing. With a correlated one it reaches the minimum in three steps, where plain gradient descent at $\ell = 6$ had not after thirty. The approximation also degrades as the window grows, because $\mat{P}$ leaves out the model's propagator: on the same system with an identity background covariance, the largest eigenvalue of $\mat{P}^{-1} \mat{H}$ was 1.5 at a window of 0.1 time units and 3.4 at 0.2, past the stability limit of a unit step. For longer windows use a solver that re-linearises, such as [`GaussNewtonCG`](xref:api#argminax.solve.GaussNewtonCG).
+
+The transform does not guard against a step that is too large; the loop that calls it should.
+
 ### Precision and JAX
 
 - The state, the updates and the posterior keep the dtype of the parameters; a gradient in another dtype is cast to it.
@@ -218,6 +238,7 @@ Each row is the rule with one choice of family, curvature, step size and prior. 
 | Gradient descent with weight decay | diagonal | zero | $\alpha$ (a step of $\alpha / \delta$) | `blr_diagonal(curvature="identity")` |
 | RMSprop-like scaling, without the square root | diagonal | squared gradient | about $1 - \beta_2$ | `blr_diagonal` |
 | Newton's method | full rank | exact | 1 | `newton` |
+| Preconditioned gradient descent | any, fixed | supplied by the caller | $\alpha$ | `preconditioned_sgd` |
 | The Laplace approximation | full rank | exact, at the mean | the fixed point | `blr_full_rank` with an exact callable |
 | A conjugate (linear-Gaussian) update | full rank | exact | 1 | `blr_full_rank(1.0)` with an exact callable, as in the example |
 | Online and continual learning | any | any | $\alpha$ | not expressible yet, except when the previous posterior is isotropic (see below) |
@@ -233,3 +254,4 @@ The prior of every transform is isotropic, $\mathcal{N}(\gvect{\mu}_0, \delta^{-
 - Mishkin, Kunstner, Nielsen, Schmidt and Khan (2018), "SLANG: Fast Structured Covariance Approximations for Bayesian Deep Learning with Natural Gradient", arXiv:1811.04504.
 - Shen et al. (2024), "Variational Learning is Effective for Large Deep Networks", arXiv:2402.17641.
 - Kunstner, Balles and Hennig (2019), "Limitations of the Empirical Fisher Approximation for Natural Gradient Descent", arXiv:1905.12558.
+- Solvik, Penny and Hoyer (2025), "4D-Var using Hessian approximation and backpropagation applied to automatically differentiable numerical and machine learning models", Journal of Advances in Modeling Earth Systems 17, e2024MS004608, doi:10.1029/2024MS004608.

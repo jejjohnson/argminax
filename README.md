@@ -56,7 +56,7 @@ argminax extends optimistix as gaussx extends lineax: its solvers are optimistix
 | Module | What it gives you |
 |---|---|
 | `argminax.solve` | `GaussNewtonCG` (Gauss–Newton and Levenberg–Marquardt with a matrix-free inner CG), `dual_solve` (the observation-space increment), `Reparametrised` (positive and bounded states), and `laplace_mode` for GMRF, GP and Markov-GP models |
-| `argminax.blr` | the Bayesian learning rule as optax transforms that carry the Gaussian during training: `blr_diagonal`, `blr_full_rank`, `blr_low_rank`, `ivon`, `newton`, and `blr_posterior`, which reads any of their states as a `Laplace` |
+| `argminax.blr` | the Bayesian learning rule as optax transforms that carry the Gaussian during training: `blr_diagonal`, `blr_full_rank`, `blr_low_rank`, `ivon`, `newton`, `preconditioned_sgd` (the same step with a precision you fix), and `blr_posterior`, which reads any of their states as a `Laplace` |
 | `argminax.curvature` | `Laplace`, the Gaussian $`\mathcal{N}(\hat{\mathbf{x}}, \hat{\mathbf{H}}^{-1})`$ with its covariance, log-determinant and samples; `gauss_newton` builds it from whitened residuals |
 | `argminax.diagnose` | `averaging_kernel`, `degrees_of_freedom`, `information_content`, `evidence` and the prior-precision search, exact or stochastic with a standard error |
 | `argminax.adjoint` | `KStep` and `OneStep`, the adjoints for a minimiser stopped early, as in learned 4D-Var |
