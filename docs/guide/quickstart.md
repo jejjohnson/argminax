@@ -46,6 +46,14 @@ $\vect{x} \in \mathbb{R}^{D_x}$ is the state we solve for, $\vect{y} \in \mathbb
 
 The third row counts the directions the measurement decided: $d_s$ is near 0 when the prior decides everything and approaches $D_x$ when the measurement does. The fifth row is the fixed point of the Bayesian learning rule (Khan and Rue, 2023), and with the gradient and the exact curvature evaluated at the mean it is the first two rows again, $\gvect{\mu} = \hat{\vect{x}}$ and $\gmat{\Lambda} = \gmat{\Sigma}_{x \mid y}^{-1}$ (see [During training](#during-training)).
 
+```{figure} https://raw.githubusercontent.com/jejjohnson/geostack/main/docs/images/libraries/argminax_hessian/argminax_hessian.png
+:alt: The Hessian at the minimum in the middle; on the left, each Gauss–Newton step solves with it, the Laplace posterior factors it, and the Bayesian learning rule ends on it; on the right, the averaging kernel and degrees of freedom solve with it, the information content and evidence take its log-determinant, and the implicit adjoint solves with it once per direction
+:width: 100%
+:label: fig-hessian
+
+One Hessian, every answer: what each module does with the curvature at the minimum. The schematic is kept in [geostack](https://github.com/jejjohnson/geostack/tree/main/docs/images/libraries/argminax_hessian).
+```
+
 ### Implicit differentiation
 
 $\hat{\vect{x}}(\vect{y}, \gvect{\theta})$ has no closed form in general, so it cannot be differentiated as written. There are two ways around that. One is to unroll: differentiate through every iteration of the solver, which costs memory in proportion to the number of iterations and ties the derivative to the solver. The other uses what the solver was looking for. At the minimum the gradient vanishes for every $\vect{y}$ and $\gvect{\theta}$,
@@ -67,6 +75,14 @@ Three things follow from it.
 - **The same matrix gives the uncertainty.** $\gmat{\Sigma}_{x \mid y}$ is the covariance of the Laplace approximation $\mathcal{N}(\hat{\vect{x}}, \gmat{\Sigma}_{x \mid y})$, and $\partial_{\gvect{\theta}} \hat{\vect{x}} = -\gmat{\Sigma}_{x \mid y} \nabla^2_{\vect{x}\gvect{\theta}} \mathcal{J}$. How sharp the minimum is and how it moves are two readings of one operator, which is why argminax keeps the solvers, the curvature and the adjoints in one package.
 - **A minimiser is a layer.** An outer loss $\mathcal{L}(\hat{\vect{x}}(\vect{y}, \gvect{\theta}))$ can be minimised over $\gvect{\theta}$ by gradient descent, with $\mathrm{d}\mathcal{L} / \mathrm{d}\gvect{\theta} = (\partial_{\gvect{\theta}} \hat{\vect{x}})^\top \nabla_{\vect{x}} \mathcal{L}$, which is one solve with the Hessian in reverse mode. This is bilevel optimisation: hyperparameter learning, a retrieval inside a neural network, learned 4D-Var.
 - **The derivative is a result in its own right.** For the retrieval cost below with a linear forward model $h(\vect{x}) = \mat{H} \vect{x}$, the gain is $\mat{G} = \gmat{\Sigma}_{x \mid y} \mat{H}^\top \gmat{\Sigma}_\varepsilon^{-1}$, the gain matrix of retrieval theory, and the averaging kernel is $\mat{J}_{\hat{x}} = \mat{G} \mat{H} \in \mathbb{R}^{D_x \times D_x}$ (Rodgers, 2000, where it is $\mat{A}$).
+
+```{figure} https://raw.githubusercontent.com/jejjohnson/geostack/main/docs/images/libraries/argminax_adjoints/argminax_adjoints.png
+:alt: Three ways to differentiate a solve: unrolling differentiates every iteration, at a cost that grows with their number; the implicit adjoint skips the iterations and solves one linear system with the Hessian at the minimum, which needs a converged solve; KStep and OneStep stop the gradient before the last k updates, for a solver stopped early
+:width: 100%
+:label: fig-adjoints
+
+Three ways to differentiate a solve: which iterations the gradient flows through, what each costs, and when each is right. The schematic is kept in [geostack](https://github.com/jejjohnson/geostack/tree/main/docs/images/libraries/argminax_adjoints).
+```
 
 ### Where it stops holding
 

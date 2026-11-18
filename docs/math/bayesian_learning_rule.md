@@ -104,6 +104,14 @@ To take the expectations by Monte Carlo and not at the mean, draw parameters fro
 
 A family is a choice of structure for the precision. Each one trades storage and cost per step against how much of the curvature it can hold.
 
+```{figure} https://raw.githubusercontent.com/jejjohnson/geostack/main/docs/images/libraries/argminax_blr_families/argminax_blr_families.png
+:alt: The three precisions of the Bayesian learning rule drawn as matrices: diagonal, diagonal plus a rank-R factor, and dense, with the storage and the cost of a step of each, and ivon, newton and preconditioned_sgd as special cases
+:width: 100%
+:label: fig-blr-families
+
+The families by the structure of their precision; the table below has the same facts per transform. The schematic is kept in [geostack](https://github.com/jejjohnson/geostack/tree/main/docs/images/libraries/argminax_blr_families).
+```
+
 | Transform | Precision $\gmat{\Lambda}_\theta$ | Storage | Cost of a step | Parameters |
 | --- | --- | --- | --- | --- |
 | [`blr_diagonal`](xref:api#argminax.blr.blr_diagonal) | $\op{diag}(\vect{d})$ | $O(D_\theta)$ | $O(D_\theta)$ | any pytree |

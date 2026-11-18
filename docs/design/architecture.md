@@ -4,38 +4,14 @@ argminax is one package, `src/argminax/`. The logic lives in `argminax._src.<mod
 
 ## The layers
 
-The arrows below read "imports". Dependencies point one way, so nothing at the bottom knows about anything above it.
+The figure below lists what each area imports, and its arrows read "imports". Dependencies point one way, so nothing at the bottom knows about anything above it.
 
-```{mermaid}
-flowchart TD
-    subgraph areas["argminax, one public module per area"]
-        diagnose["diagnose<br/>averaging kernel, degrees of freedom, evidence"]
-        solve["solve<br/>GaussNewtonCG, dual_solve, laplace_mode"]
-        blr["blr<br/>the Bayesian learning rule as optax transforms"]
-        adjoint["adjoint<br/>KStep, OneStep"]
-        curvature["curvature<br/>Laplace, gauss_newton"]
-    end
-    subgraph foundations["Foundations"]
-        optimistix
-        optax["optax (the optax extra)"]
-        gaussx
-        lineax
-        jax["JAX, Equinox, einx, jaxtyping"]
-    end
-    diagnose --> curvature
-    solve --> curvature
-    blr --> curvature
-    solve --> optimistix
-    adjoint --> optimistix
-    blr --> optax
-    curvature --> gaussx
-    diagnose --> gaussx
-    solve --> gaussx
-    blr --> gaussx
-    gaussx --> lineax
-    lineax --> jax
-    optimistix --> jax
-    optax --> jax
+```{figure} https://raw.githubusercontent.com/jejjohnson/geostack/main/docs/images/libraries/argminax_imports/argminax_imports-light.svg
+:alt: argminax's five public modules and what each imports: diagnose (gaussx, lineax, and matfree through an extra), solve (optimistix, gaussx, lineax, and numpyro through an extra) and blr (gaussx, lineax, and optax through an extra) each import curvature, which imports gaussx and lineax; adjoint imports only optimistix
+:width: 100%
+:label: fig-imports
+
+Each public module, what it imports (dashed when through an extra), and the imports between them, read from the source. The schematic is kept in [geostack](https://github.com/jejjohnson/geostack/tree/main/docs/images/libraries/argminax_imports).
 ```
 
 `curvature` is the bottom of the package: it owns the [`Laplace`](xref:api#argminax.curvature.Laplace) object, a mode and a precision operator, which every other area either builds or reads. `diagnose`, `solve` and `blr` import it, `adjoint` imports nothing else from the package, and no module imports `diagnose` or `blr`. The division of labour with gaussx is that one step's algebra is gaussx's and the loop is ours. A single Newton or Bayesian learning rule step, the structured solves and the log-determinants come from gaussx, and argminax iterates them and reads the curvature at the end.
