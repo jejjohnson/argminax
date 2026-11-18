@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.0.7](https://github.com/jejjohnson/argminax/compare/v0.0.6...v0.0.7) (2026-11-18)
+
+
+### Features
+
+* **blr:** add blr_posterior, the Laplace posterior of any optimiser state ([#68](https://github.com/jejjohnson/argminax/issues/68)) ([7694aa6](https://github.com/jejjohnson/argminax/commit/7694aa6948286560649c904313121e7f238f8eee))
+* **blr:** add preconditioned_sgd, gradient descent through the inverse of a fixed operator ([#74](https://github.com/jejjohnson/argminax/issues/74)) ([81dc462](https://github.com/jejjohnson/argminax/commit/81dc462142503d8abbcd7fa7aa83085c706aeb35))
+* **blr:** add the diagonal Bayesian learning rule and IVON as optax transforms ([#65](https://github.com/jejjohnson/argminax/issues/65)) ([e41a569](https://github.com/jejjohnson/argminax/commit/e41a569b45a106246e96d4507bbd6aef04134a9d))
+* **blr:** add the full-rank Bayesian learning rule and the Newton preset ([#66](https://github.com/jejjohnson/argminax/issues/66)) ([837b3e5](https://github.com/jejjohnson/argminax/commit/837b3e5fb0fdd80b2b7ccff8a011e5fe06ff2b96))
+* **blr:** add the low-rank Bayesian learning rule with SLANG's update ([#67](https://github.com/jejjohnson/argminax/issues/67)) ([bd76dd5](https://github.com/jejjohnson/argminax/commit/bd76dd53abaa284a52caf3b5b2369c1cbc82782a))
+
 ## [0.0.6](https://github.com/jejjohnson/argminax/compare/v0.0.5...v0.0.6) (2026-11-10)
 
 
