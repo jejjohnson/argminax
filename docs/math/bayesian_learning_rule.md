@@ -1,6 +1,6 @@
 # The Bayesian learning rule: derivation and algorithms
 
-A solver in argminax runs to a minimum and reads the Gaussian there. The transforms in `argminax.blr` carry that Gaussian while they train, and they all come from one update, the Bayesian learning rule of Khan and Rue (2023). This page derives the rule from the variational objective, writes out the algorithm of every transform next to the code that implements it, states the numerical safeguards the transforms rely on, and lists the classical algorithms the rule reduces to. The [guide](../guide/blr.md) is the place to start if you want to use a transform; this page is the reference behind it.
+A solver in argminax runs to a minimum and reads the Gaussian there. The transforms in `argminax.blr` carry that Gaussian while they train, and they all come from one update, the Bayesian learning rule of Khan and Rue (2023). This page derives the rule from the variational objective, writes out the algorithm of every transform next to the code that implements it, states the numerical safeguards the transforms rely on, and lists the classical algorithms the rule reduces to. The [guide](../guide/blr.md) is the place to start if you want to use a transform; this page is the reference behind it, and [Architecture](../design/architecture.md) says where each piece lives in the package.
 
 Every code block on this page was run as written against argminax 0.0.7, and each one ends by checking the hand-written step against the transform that ships.
 
