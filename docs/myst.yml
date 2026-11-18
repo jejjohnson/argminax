@@ -40,6 +40,9 @@ project:
     - title: Examples
       children:
         - file: notebooks/blr_walkthrough.ipynb
+    - title: Mathematical reference
+      children:
+        - file: math/bayesian_learning_rule.md
     - title: Project
       children:
         - file: contributing.md

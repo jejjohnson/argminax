@@ -1,6 +1,6 @@
 # The Bayesian learning rule
 
-The solvers in argminax run to a minimum and then read the Gaussian there. The transforms in `argminax.blr` carry that Gaussian while they train: each one is an optax `GradientTransformation` whose state holds $q(\gvect{\theta}) = \mathcal{N}(\gvect{\mu}_\theta, \gmat{\Lambda}_\theta^{-1})$ over the parameters, and each step moves it by one minibatch. This page derives the update they share, lists what each transform stores and costs, and says what to watch for numerically. The main reference is Khan and Rue (2023).
+The solvers in argminax run to a minimum and then read the Gaussian there. The transforms in `argminax.blr` carry that Gaussian while they train: each one is an optax `GradientTransformation` whose state holds $q(\gvect{\theta}) = \mathcal{N}(\gvect{\mu}_\theta, \gmat{\Lambda}_\theta^{-1})$ over the parameters, and each step moves it by one minibatch. This page derives the update they share, lists what each transform stores and costs, and says what to watch for numerically. The main reference is Khan and Rue (2023). The [mathematical reference](../math/bayesian_learning_rule.md) has the full derivation and writes out the algorithm of every transform.
 
 They need optax, which comes with the `optax` extra:
 
