@@ -71,9 +71,11 @@ The transforms use whatever gradient and curvature they are given. Evaluating th
 |---|---|---|---|---|
 | [`blr_diagonal`](xref:api#argminax.blr.blr_diagonal) | diagonal | $O(D_\theta)$ | $O(D_\theta)$ | any pytree |
 | [`blr_full_rank`](xref:api#argminax.blr.blr_full_rank) | dense | $O(D_\theta^2)$ | $O(D_\theta^3)$, two solves | a flat vector |
-| [`blr_low_rank`](xref:api#argminax.blr.blr_low_rank) | diagonal plus a rank-$R$ factor | $O(D_\theta R)$ | $O(D_\theta R^2)$ | a flat vector |
+| [`blr_low_rank`](xref:api#argminax.blr.blr_low_rank) | diagonal plus a rank-$R$ factor | $O(D_\theta R)$ | $O(D_\theta R^2)$ with a built-in curvature, $O(D_\theta^3)$ with a callable | a flat vector |
 | [`ivon`](xref:api#argminax.blr.ivon) | diagonal | $O(D_\theta)$ | $O(D_\theta)$ | any pytree |
 | [`newton`](xref:api#argminax.blr.newton) | dense | $O(D_\theta^2)$ | $O(D_\theta^3)$ | a flat vector |
+
+The low-rank cost of $O(D_\theta R^2)$ holds for `"ggn"` and `"identity"`, whose factor has one column or none. A callable returns a dense $(D_\theta, D_\theta)$ matrix, which the transform factors by an eigendecomposition: that step costs $O(D_\theta^3)$ and $O(D_\theta^2)$ of temporary storage whatever the rank, so use a callable there only when $D_\theta$ is small.
 
 The full-rank and low-rank transforms need one flat vector; flatten a parameter pytree with `jax.flatten_util.ravel_pytree`. A step size can be a float or an optax schedule of the step count.
 
@@ -188,7 +190,18 @@ Added damping accumulates: the full-rank precision settles at $\delta \mat{I} + 
 
 ### Monte Carlo instead of the mean
 
-To take the expectations under $q$ by Monte Carlo and not at the mean, draw parameters from the current Gaussian before each gradient: `blr_posterior(state).sample(1, key=key)` gives a draw, and the gradient and the curvature are then evaluated there.
+To take the expectations under $q$ by Monte Carlo and not at the mean, draw parameters from the current Gaussian before each gradient (`blr_posterior(state).sample(1, key=key)` gives a draw) and evaluate the gradient there. The built-in `"ggn"` curvature is built from the gradient it is given, so it follows the draw. A callable does not: the full-rank and low-rank transforms call `curvature(mean, grad)` with the mean in their state, so a callable that uses its first argument returns the curvature at the mean, next to a gradient taken at the draw. To evaluate both at the draw, build the transform inside the step, with a callable that closes over the draw:
+
+```python
+def step(mean, state, key):
+    draw = blr_posterior(state).sample(1, key=key)[0]
+    # the curvature at the draw, whatever mean the transform passes in
+    optimiser = blr_full_rank(1e-2, curvature=lambda _, grad: jax.hessian(cost)(draw))
+    updates, state = optimiser.update(jax.grad(cost)(draw), state)
+    return mean + updates, state
+```
+
+A transform holds no state of its own, so the state of one passes to the next. The update is the change of the mean in either case: add it to the mean, never to the draw.
 
 ### Precision and JAX
 
