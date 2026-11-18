@@ -14,6 +14,8 @@ optax comes with the ``argminax[optax]`` extra.
 | `blr_low_rank` | a diagonal-plus-rank-R precision, O(D_θ R²) a step (SLANG) |
 | `newton` | damped Newton's method, the full-rank rule with step size 1 |
 | `ivon` | IVON: the diagonal rule with momentum, weight decay and a clipped step |
+| `preconditioned_sgd` | gradient descent through the inverse of a fixed precision |
+| `scale_by_preconditioner` | the same step without the step size, for an optax chain |
 | `blr_posterior` | the Gaussian of any state, as an `argminax.curvature.Laplace` |
 | `BLRDiagonalState`, `BLRFullRankState` | the states that hold the Gaussian |
 | `BLRLowRankState` | the low-rank state: the diagonal d and the factor U |
@@ -33,6 +35,8 @@ from argminax._src.blr import (
     blr_posterior,
     ivon,
     newton,
+    preconditioned_sgd,
+    scale_by_preconditioner,
 )
 
 
@@ -47,4 +51,6 @@ __all__ = [
     "blr_posterior",
     "ivon",
     "newton",
+    "preconditioned_sgd",
+    "scale_by_preconditioner",
 ]
