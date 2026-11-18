@@ -100,6 +100,8 @@ So the diagonal of the precision is always what the rule prescribes, and with $R
 
 Two hundred noisy observations of the line $y = 2x - 1$, with noise standard deviation 0.5 and a unit prior on the slope and the intercept. The cost is quadratic, so one full-rank step with the exact curvature gives the exact posterior, and the state goes straight into the diagnostics.
 
+The [walkthrough notebook](../notebooks/blr_walkthrough.ipynb) runs the same problem three ways, with figures: `blr_diagonal` on minibatches, `blr_full_rank` converging to the exact posterior, and draws and diagnostics from the state.
+
 ```python
 import jax
 import jax.numpy as jnp
