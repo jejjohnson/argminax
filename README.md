@@ -30,24 +30,26 @@
 A retrieval is not finished when the optimiser stops. We also want to know how sharp the minimum is (how much the measurement actually constrained the state) and how the answer moves when the measurement, the prior or the forward model change. So argminax treats the minimiser of a cost as a function of everything the cost was built from,
 
 ```math
-\hat{\mathbf{x}}(\boldsymbol{\theta}) = \mathrm{argmin}_{\mathbf{x}} \ \mathcal{J}(\mathbf{x}; \boldsymbol{\theta})
+\hat{\mathbf{x}}(\mathbf{y}, \boldsymbol{\theta}) = \mathrm{argmin}_{\mathbf{x}} \ \mathcal{J}(\mathbf{x}; \mathbf{y}, \boldsymbol{\theta})
 ```
 
-where $`\mathbf{x} \in \mathbb{R}^{D_x}`$ is the state we solve for, $`\boldsymbol{\theta} \in \mathbb{R}^{D_\theta}`$ is everything that stays fixed during the solve (the measurement, the prior, the covariances, the parameters of the forward model) and $`\mathcal{J}`$ is a scalar cost. A solver gives one value of $`\hat{\mathbf{x}}`$, whereas argminax answers questions about the whole function, and the answers all come from the same matrix, the Hessian of the cost at the minimum.
+where $`\mathbf{x} \in \mathbb{R}^{D_x}`$ is the state we solve for, $`\mathbf{y} \in \mathbb{R}^{D_y}`$ is the measurement, $`\boldsymbol{\theta} \in \mathbb{R}^{D_\theta}`$ holds the parameters (the prior, the covariances, the parameters of the forward model) and $`\mathcal{J}`$ is a scalar cost; $`\mathbf{y}`$ and $`\boldsymbol{\theta}`$ stay fixed during the solve. A solver gives one value of $`\hat{\mathbf{x}}`$, whereas argminax answers questions about the whole function, and the answers all come from the same matrix, the Hessian of the cost at the minimum.
 
 ```python
-# Shapes: D_x state elements; D_θ fixed inputs
-# (residuals, solver, prior_mean, retrieve and theta as in the quickstart below)
+# Shapes: D_x state elements; D_y measurements; D_θ parameters
+# (residuals, solver, prior_mean, retrieve and the inputs as in the quickstart below)
 
+# (y, θ), what stays fixed during the solve
+args = (measurement, log_prior_std)
 # today (optimistix)
-# x̂(θ) = argmin_x 𝒥(x; θ)
-x_hat = optx.least_squares(residuals, solver, prior_mean, args=theta).value  # → (D_x,)
+# x̂(y, θ) = argmin_x 𝒥(x; y, θ)
+x_hat = optx.least_squares(residuals, solver, prior_mean, args=args).value  # → (D_x,)
 # today (argminax)
 # 𝒩(x̂, Σ_x∣y), the Laplace posterior at the minimum
-posterior = gauss_newton(residuals, x_hat, theta)  # (D_x, D_x) PSD operator
+posterior = gauss_newton(residuals, x_hat, args)  # (D_x, D_x) PSD operator
 # today (jax)
-# ∂x̂/∂θ = −Σ_x∣y ∇²_xθ 𝒥, by the implicit function theorem
-jacobian = jax.jacobian(retrieve)(theta)  # → (D_x, D_θ)
+# G = ∂x̂/∂y and ∂x̂/∂θ, by the implicit function theorem
+gain, jacobian = jax.jacobian(retrieve, argnums=(0, 1))(*args)  # (D_x, D_y), (D_x, D_θ)
 ```
 
 None of it is a new framework. The solvers of argminax are [`optimistix`](https://github.com/patrick-kidger/optimistix) solvers and its adjoints are optimistix adjoints, so `optx.minimise` and `optx.least_squares` keep working, and `jax.grad` through a converged solve is one more linear solve. The curvature it returns is a [`gaussx`](https://github.com/jejjohnson/gaussx) operator on [`lineax`](https://github.com/patrick-kidger/lineax), so a Hessian over a large state is never formed densely unless you ask. And for a model that is trained rather than solved, `argminax.blr` gives [`optax`](https://github.com/google-deepmind/optax) gradient transformations that carry the same Gaussian along the way (the Bayesian learning rule), so they drop into an optax training loop like any other optimiser.
@@ -63,19 +65,19 @@ None of it is a new framework. The solvers of argminax are [`optimistix`](https:
 
 ## 📐 Five questions about one minimiser
 
-We read $`\mathcal{J}`$ as a negative log posterior and write $`\boldsymbol{\Sigma}_x`$ for the covariance of its prior, so the Hessian at the minimum is the inverse of the Laplace covariance $`\boldsymbol{\Sigma}_{x \mid y} \in \mathbb{R}^{D_x \times D_x}`$.
+We read $`\mathcal{J}`$ as a negative log posterior and write $`\boldsymbol{\Sigma}_x \in \mathbb{R}^{D_x \times D_x}`$ for the covariance of its prior, so the Hessian at the minimum is the inverse of the Laplace covariance $`\boldsymbol{\Sigma}_{x \mid y} \in \mathbb{R}^{D_x \times D_x}`$. During training the state is instead described by a Gaussian $`q = \mathcal{N}(\boldsymbol{\mu}, \boldsymbol{\Lambda}^{-1})`$ over $`\mathbf{x}`$, with mean $`\boldsymbol{\mu} \in \mathbb{R}^{D_x}`$ and positive-definite precision $`\boldsymbol{\Lambda} \in \mathbb{R}^{D_x \times D_x}`$.
 
 | Question | Equation | Module |
 |---|---|---|
-| Where is the minimum? | $`\nabla_{\mathbf{x}} \mathcal{J}(\hat{\mathbf{x}}; \boldsymbol{\theta}) = \mathbf{0}`$ | `argminax.solve`, or any optimistix solver |
-| How sharp is it? | $`\boldsymbol{\Sigma}_{x \mid y}^{-1} = \nabla^2_{\mathbf{x}} \mathcal{J}(\hat{\mathbf{x}}; \boldsymbol{\theta})`$ | `argminax.curvature` |
+| Where is the minimum? | $`\nabla_{\mathbf{x}} \mathcal{J}(\hat{\mathbf{x}}; \mathbf{y}, \boldsymbol{\theta}) = \mathbf{0}`$ | `argminax.solve`, or any optimistix solver |
+| How sharp is it? | $`\boldsymbol{\Sigma}_{x \mid y}^{-1} = \nabla^2_{\mathbf{x}} \mathcal{J}(\hat{\mathbf{x}}; \mathbf{y}, \boldsymbol{\theta})`$ | `argminax.curvature` |
 | How much came from the measurement? | $`d_s = \mathrm{tr}(\mathbf{I} - \boldsymbol{\Sigma}_{x \mid y} \boldsymbol{\Sigma}_x^{-1})`$ | `argminax.diagnose` |
-| How does it move when $`\boldsymbol{\theta}`$ moves? | $`\boldsymbol{\Sigma}_{x \mid y}^{-1} \partial_{\boldsymbol{\theta}} \hat{\mathbf{x}} = -\nabla^2_{\mathbf{x}\boldsymbol{\theta}} \mathcal{J}(\hat{\mathbf{x}}; \boldsymbol{\theta})`$ | `optx.ImplicitAdjoint`, `argminax.adjoint` |
-| What Gaussian does training leave? | $`\mathbb{E}_q[\nabla_{\mathbf{x}} \mathcal{J}] = \mathbf{0}, \ \boldsymbol{\Lambda} = \mathbb{E}_q[\nabla^2_{\mathbf{x}} \mathcal{J}]`$ for $`q = \mathcal{N}(\boldsymbol{\mu}, \boldsymbol{\Lambda}^{-1})`$ | `argminax.blr` |
+| How does it move when $`\mathbf{y}`$ or $`\boldsymbol{\theta}`$ moves? | $`\boldsymbol{\Sigma}_{x \mid y}^{-1} [\partial_{\mathbf{y}} \hat{\mathbf{x}}, \partial_{\boldsymbol{\theta}} \hat{\mathbf{x}}] = -[\nabla^2_{\mathbf{x}\mathbf{y}} \mathcal{J}, \nabla^2_{\mathbf{x}\boldsymbol{\theta}} \mathcal{J}]`$ | `optx.ImplicitAdjoint`, `argminax.adjoint` |
+| What Gaussian does training leave? | $`\mathbb{E}_q[\nabla_{\mathbf{x}} \mathcal{J}] = \mathbf{0}, \ \boldsymbol{\Lambda} = \mathbb{E}_q[\nabla^2_{\mathbf{x}} \mathcal{J}]`$ | `argminax.blr` |
 
 The third row compares the posterior with the prior. The trace counts the directions the measurement decided, so $`d_s`$ is near 0 when the prior decides everything and approaches $`D_x`$ when the measurement does; `argminax.diagnose` also gives the averaging kernel, the information content and the evidence.
 
-The fourth row is implicit differentiation. Differentiating the first row with respect to $`\boldsymbol{\theta}`$ gives a linear system in the same Hessian (Blondel et al., 2022), so the $`D_x \times D_\theta`$ Jacobian $`\partial_{\boldsymbol{\theta}} \hat{\mathbf{x}}`$ of a converged solve costs one more linear solve per direction, whatever the solver did to get there and however many iterations it took. This is what makes a minimiser a layer: an outer loss $`\mathcal{L}(\hat{\mathbf{x}}(\boldsymbol{\theta}))`$ can be minimised over $`\boldsymbol{\theta}`$ by gradient descent (bilevel optimisation, hyperparameter learning, learned 4D-Var), with
+The fourth row is implicit differentiation, with every term evaluated at the minimum. Differentiating the first row with respect to $`\mathbf{y}`$ and $`\boldsymbol{\theta}`$ gives a linear system in the same Hessian with one right-hand side for each (Blondel et al., 2022), so the gain $`\mathbf{G} = \partial_{\mathbf{y}} \hat{\mathbf{x}} \in \mathbb{R}^{D_x \times D_y}`$ and the $`D_x \times D_\theta`$ Jacobian $`\partial_{\boldsymbol{\theta}} \hat{\mathbf{x}}`$ of a converged solve cost one more linear solve per direction, whatever the solver did to get there and however many iterations it took. The gain says how the retrieval answers the measurement. The Jacobian with respect to the parameters is what makes a minimiser a layer: an outer loss $`\mathcal{L}(\hat{\mathbf{x}}(\mathbf{y}, \boldsymbol{\theta}))`$ can be minimised over $`\boldsymbol{\theta}`$ by gradient descent (bilevel optimisation, hyperparameter learning, learned 4D-Var), with
 
 ```math
 \frac{\mathrm{d}\mathcal{L}}{\mathrm{d}\boldsymbol{\theta}} = \left(\partial_{\boldsymbol{\theta}} \hat{\mathbf{x}}\right)^\top \nabla_{\mathbf{x}} \mathcal{L}
@@ -86,10 +88,10 @@ The fifth row is for a model that is trained rather than solved. The Bayesian le
 The cost we minimise most often is the retrieval cost. For a measurement $`\mathbf{y} \in \mathbb{R}^{D_y}`$, a forward model $`h: \mathbb{R}^{D_x} \to \mathbb{R}^{D_y}`$, a prior $`\mathcal{N}(\boldsymbol{\mu}_x, \boldsymbol{\Sigma}_x)`$ and a measurement-error covariance $`\boldsymbol{\Sigma}_\varepsilon \in \mathbb{R}^{D_y \times D_y}`$,
 
 ```math
-\mathcal{J}(\mathbf{x}; \boldsymbol{\theta}) = \frac{1}{2} \Vert \mathbf{y} - h(\mathbf{x}) \Vert^2_{\boldsymbol{\Sigma}_\varepsilon^{-1}} + \frac{1}{2} \Vert \mathbf{x} - \boldsymbol{\mu}_x \Vert^2_{\boldsymbol{\Sigma}_x^{-1}}
+\mathcal{J}(\mathbf{x}; \mathbf{y}, \boldsymbol{\theta}) = \frac{1}{2} \Vert \mathbf{y} - h(\mathbf{x}) \Vert^2_{\boldsymbol{\Sigma}_\varepsilon^{-1}} + \frac{1}{2} \Vert \mathbf{x} - \boldsymbol{\mu}_x \Vert^2_{\boldsymbol{\Sigma}_x^{-1}}
 ```
 
-with $`\boldsymbol{\theta} = (\mathbf{y}, \boldsymbol{\mu}_x, \boldsymbol{\Sigma}_\varepsilon, \boldsymbol{\Sigma}_x)`$ plus whatever parameters $`h`$ has. Its Gauss–Newton curvature is $`\boldsymbol{\Sigma}_{x \mid y}^{-1} = \mathbf{H}^\top \boldsymbol{\Sigma}_\varepsilon^{-1} \mathbf{H} + \boldsymbol{\Sigma}_x^{-1}`$, with $`\mathbf{H} = \mathbf{J}_h(\hat{\mathbf{x}}) \in \mathbb{R}^{D_y \times D_x}`$ the Jacobian of $`h`$ at the minimum, and the quantities of retrieval theory (Rodgers, 2000) are readings of it. The gain $`\mathbf{G} = \partial_{\mathbf{y}} \hat{\mathbf{x}} = \boldsymbol{\Sigma}_{x \mid y} \mathbf{H}^\top \boldsymbol{\Sigma}_\varepsilon^{-1} \in \mathbb{R}^{D_x \times D_y}`$ is the derivative with respect to the measurement, the averaging kernel (Rodgers' $`\mathbf{A}`$) is $`\mathbf{J}_{\hat{x}} = \mathbf{G} \mathbf{H} = \mathbf{I} - \boldsymbol{\Sigma}_{x \mid y} \boldsymbol{\Sigma}_x^{-1} \in \mathbb{R}^{D_x \times D_x}`$, and the degrees of freedom for signal are $`d_s = \mathrm{tr} \ \mathbf{J}_{\hat{x}}`$. For a linear $`h`$ these hold exactly.
+with $`\boldsymbol{\theta} = (\boldsymbol{\mu}_x, \boldsymbol{\Sigma}_\varepsilon, \boldsymbol{\Sigma}_x)`$ plus whatever parameters $`h`$ has. Its Gauss–Newton curvature is $`\boldsymbol{\Sigma}_{x \mid y}^{-1} = \mathbf{H}^\top \boldsymbol{\Sigma}_\varepsilon^{-1} \mathbf{H} + \boldsymbol{\Sigma}_x^{-1}`$, with $`\mathbf{H} = \mathbf{J}_h(\hat{\mathbf{x}}) \in \mathbb{R}^{D_y \times D_x}`$ the Jacobian of $`h`$ at the minimum, and the quantities of retrieval theory (Rodgers, 2000) are readings of it. The gain is $`\mathbf{G} = \boldsymbol{\Sigma}_{x \mid y} \mathbf{H}^\top \boldsymbol{\Sigma}_\varepsilon^{-1}`$, the averaging kernel (Rodgers' $`\mathbf{A}`$) is $`\mathbf{J}_{\hat{x}} = \mathbf{G} \mathbf{H} = \mathbf{I} - \boldsymbol{\Sigma}_{x \mid y} \boldsymbol{\Sigma}_x^{-1} \in \mathbb{R}^{D_x \times D_x}`$, and the degrees of freedom for signal are $`d_s = \mathrm{tr} \ \mathbf{J}_{\hat{x}}`$. For a linear $`h`$ these hold exactly.
 
 ## 📥 Install
 
@@ -107,7 +109,7 @@ pip install "argminax[optax] @ git+https://github.com/jejjohnson/argminax.git"
 
 ## 🛰️ Quickstart: a nonlinear retrieval
 
-Three unknowns from five noisy measurements, with the forward model $`h(\mathbf{x}) = \mathbf{W} \tanh(\mathbf{x})`$ for a fixed $`\mathbf{W} \in \mathbb{R}^{D_y \times D_x}`$, the prior $`\mathcal{N}(\mathbf{0}, \sigma_x^2 \mathbf{I})`$ and the measurement error $`\boldsymbol{\Sigma}_\varepsilon = \sigma_\varepsilon^2 \mathbf{I}`$. The fixed inputs are $`\boldsymbol{\theta} = (\mathbf{y}, \log \sigma_x)`$, and the steps are the first four questions in order.
+Three unknowns from five noisy measurements, with the forward model $`h(\mathbf{x}) = \mathbf{W} \tanh(\mathbf{x})`$ for a fixed $`\mathbf{W} \in \mathbb{R}^{D_y \times D_x}`$, the prior $`\mathcal{N}(\mathbf{0}, \sigma_x^2 \mathbf{I})`$ and the measurement error $`\boldsymbol{\Sigma}_\varepsilon = \sigma_\varepsilon^2 \mathbf{I}`$. The measurement is $`\mathbf{y}`$, the one parameter is $`\boldsymbol{\theta} = \log \sigma_x`$, the log of the prior's width, and the steps are the first four questions in order.
 
 ```python
 import einx
@@ -148,9 +150,9 @@ def forward(x: Float[Array, " state"]) -> Float[Array, " obs"]:
 
 
 # user
-# r(x; θ) = ((y − h(x)) / σ_ε, (x − μ_x) / σ_x), so 𝒥(x; θ) = ½ ‖r(x; θ)‖²
-def residuals(x, theta):
-    measurement, log_prior_std = theta
+# r(x; y, θ) = ((y − h(x)) / σ_ε, (x − μ_x) / σ_x), so 𝒥(x; y, θ) = ½ ‖r(x; y, θ)‖²
+def residuals(x, args):
+    measurement, log_prior_std = args
     misfit = (measurement - forward(x)) / noise_std
     departure = (x - prior_mean) / jnp.exp(log_prior_std)
     return misfit, departure
@@ -159,28 +161,29 @@ def residuals(x, theta):
 # y = h(x_true) + 0.05
 true_state = jnp.array([0.8, -0.4, 0.3])  # → (D_x,)
 measurement = forward(true_state) + 0.05  # (D_x,) → (D_y,)
-# θ = (y, log σ_x), with σ_x = 1
-theta = (measurement, jnp.asarray(0.0))
+# θ = log σ_x, with σ_x = 1
+log_prior_std = jnp.asarray(0.0)
 
 # today (argminax)
 solver = GaussNewtonCG(rtol=1e-8, atol=1e-8)
 
 
 # user
-# x̂(θ) = argmin_x 𝒥(x; θ)
-def retrieve(theta):
+# x̂(y, θ) = argmin_x 𝒥(x; y, θ)
+def retrieve(measurement, log_prior_std):
+    args = (measurement, log_prior_std)
     # today (optimistix)
-    solution = optx.least_squares(residuals, solver, prior_mean, args=theta)
+    solution = optx.least_squares(residuals, solver, prior_mean, args=args)
     return solution.value
 
 
 # 1. Where is the minimum?
-x_hat = retrieve(theta)  # → (D_x,)
+x_hat = retrieve(measurement, log_prior_std)  # → (D_x,)
 
 # 2. How sharp is it?
 # today (argminax)
 # 𝒩(x̂, Σ_x∣y), with Σ_x∣y⁻¹ = J_rᵀ J_r at x̂
-posterior = gauss_newton(residuals, x_hat, theta)
+posterior = gauss_newton(residuals, x_hat, (measurement, log_prior_std))
 # today (argminax)
 # √diag(Σ_x∣y)
 posterior_std = jnp.sqrt(marginal_variance(posterior))  # → (D_x,)
@@ -190,10 +193,11 @@ posterior_std = jnp.sqrt(marginal_variance(posterior))  # → (D_x,)
 # dₛ = tr J_x̂, with J_x̂ = I − Σ_x∣y Σ_x⁻¹ and Σ_x = I here
 dofs = degrees_of_freedom(averaging_kernel(posterior)).value  # → ()
 
-# 4. How does it move when θ moves?
+# 4. How does it move when y or θ moves?
 # today (jax)
-# ∂x̂/∂θ = −Σ_x∣y ∇²_xθ 𝒥, one linear solve per direction
-gain, dx_dlog_prior_std = jax.jacobian(retrieve)(theta)  # (D_x, D_y), (D_x,)
+# Σ_x∣y⁻¹ [∂x̂/∂y, ∂x̂/∂θ] = −[∇²_xy 𝒥, ∇²_xθ 𝒥], one linear solve per direction
+jacobians = jax.jacobian(retrieve, argnums=(0, 1))(measurement, log_prior_std)
+gain, dx_dlog_prior_std = jacobians  # (D_x, D_y), (D_x,)
 
 print(x_hat.round(3), posterior_std.round(3), dofs.round(2), dx_dlog_prior_std.round(3))
 ```
