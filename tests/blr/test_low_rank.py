@@ -11,6 +11,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from _harness import assert_grad_matches_fd
 from _regression import REFERENCE, REGRESSION, run
 from hypothesis import given, settings, strategies as st
 
@@ -143,6 +144,17 @@ def _cost_after(scale, optimiser, num_steps):
     return REGRESSION.cost(theta)
 
 
+def _assert_differentiable(optimiser, num_steps) -> None:
+    def cost(scale):
+        return _cost_after(scale, optimiser, num_steps)
+
+    scale = jnp.asarray(0.3)
+    reverse = jax.grad(cost)(scale)
+    assert jnp.isfinite(reverse)
+    np.testing.assert_allclose(reverse, jax.jacfwd(cost)(scale), rtol=1e-10)
+    assert_grad_matches_fd(cost, scale)
+
+
 @pytest.mark.parametrize("rank", [1, 2, REGRESSION.start.shape[0]])
 @pytest.mark.parametrize("num_steps", [1, 3])
 def test_gradient_through_training_from_init_is_finite_and_right(
@@ -152,16 +164,46 @@ def test_gradient_through_training_from_init_is_finite_and_right(
     # the stock SVD derivative is NaN there. Rank 1 truncates from step two,
     # the full rank never does.
     optimiser = blr_low_rank(0.1, rank=rank, prior_precision=0.5)
-    reverse = jax.grad(_cost_after)(0.3, optimiser, num_steps)
-    forward = jax.jacfwd(_cost_after)(0.3, optimiser, num_steps)
-    step = 1e-6
-    above = _cost_after(0.3 + step, optimiser, num_steps)
-    below = _cost_after(0.3 - step, optimiser, num_steps)
-    central = (above - below) / (2 * step)
-    assert jnp.isfinite(reverse)
-    np.testing.assert_allclose(reverse, forward, rtol=1e-10)
-    # a central difference of step h is accurate to O(h²) relative
-    np.testing.assert_allclose(reverse, central, rtol=1e-6)
+    _assert_differentiable(optimiser, num_steps)
+
+
+def _repeated(mean, grad):
+    # C = (1 + μ₁²) I: every eigenvalue is the same, and moves with the mean
+    return (1.0 + mean[0] ** 2) * jnp.eye(mean.shape[0], dtype=mean.dtype)
+
+
+def _indefinite(mean, grad):
+    # C = (1 + μ₂²) diag(1, −½, 2, 0, …): one negative and several zero eigenvalues
+    signs = jnp.zeros_like(mean).at[:3].set(jnp.array([1.0, -0.5, 2.0]))
+    return (1.0 + mean[1] ** 2) * jnp.diag(signs)
+
+
+def _rank_one(mean, grad):
+    # C = μ μᵀ: all but one eigenvalue is zero
+    return jnp.outer(mean, mean)
+
+
+@pytest.mark.parametrize("curvature", [_repeated, _indefinite, _rank_one])
+@pytest.mark.parametrize("num_steps", [1, 3])
+def test_gradient_through_a_callable_curvature_is_finite_and_right(
+    curvature, num_steps
+) -> None:
+    # The stock eigendecomposition derivative is NaN at a repeated eigenvalue,
+    # and the square root's at a zero or a dropped negative one.
+    size = REGRESSION.start.shape[0]
+    optimiser = blr_low_rank(0.1, rank=size, prior_precision=0.5, curvature=curvature)
+    _assert_differentiable(optimiser, num_steps)
+
+
+@pytest.mark.parametrize("prior_mean", [jnp.zeros(1), jnp.zeros(2), 0.0])
+def test_prior_mean_of_another_shape_is_rejected_not_broadcast(prior_mean) -> None:
+    optimiser = blr_low_rank(0.1, prior_mean=prior_mean)
+    with pytest.raises(ValidationError, match="prior_mean"):
+        optimiser.init(jnp.zeros(3))
+    # a state built by another transform reaches update without this init
+    state = blr_low_rank(0.1).init(jnp.zeros(3))
+    with pytest.raises(ValidationError, match="prior_mean"):
+        optimiser.update(jnp.ones(3), state)
 
 
 def test_float32_parameters_stay_float32() -> None:

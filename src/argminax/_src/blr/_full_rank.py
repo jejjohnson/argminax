@@ -21,6 +21,7 @@ from argminax._src.blr._optax import (
     require_non_negative,
     require_optax,
     require_positive,
+    require_prior_mean,
     require_step_size,
     step_size,
 )
@@ -88,6 +89,7 @@ def _transform(
         return gx.solve(operator, nat_mean, solver=solver)
 
     def init_fn(params: Float[Array, " state"]) -> BLRFullRankState:
+        require_prior_mean(prior_mean, params.shape)
         size = params.shape[0]
         # Λ_θ = δ I
         precision = prior_precision * jnp.eye(size, dtype=params.dtype)
@@ -104,6 +106,8 @@ def _transform(
         # the state's dtype, set from the parameters at init, is the working one
         dtype = state.nat_mean.dtype
         grads = jnp.asarray(grads, dtype)
+        # checked here as well as in init: a state can come from another transform
+        require_prior_mean(prior_mean, grads.shape)
         size = grads.shape[0]
         identity = jnp.eye(size, dtype=dtype)
         centre = jnp.zeros(size, dtype) if prior_mean is None else prior_mean
@@ -191,7 +195,9 @@ def blr_full_rank(
     Raises:
         ValidationError: If ``curvature`` is neither a known name nor a
             callable, a constant ``learning_rate`` is outside (0, 1],
-            ``prior_precision`` is not positive or ``damping`` is negative.
+            ``prior_precision`` is not positive or ``damping`` is negative;
+            or, from ``init`` and ``update``, if ``prior_mean`` is not shaped
+            like the parameters.
         MissingExtraError: If optax is not installed.
 
     Examples:

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from types import ModuleType
 
+import jax.numpy as jnp
 from jaxtyping import Array, Float, Int
 
 from argminax.exceptions import MissingExtraError, ValidationError
@@ -52,6 +53,22 @@ def require_rate(value: float, name: str) -> None:
     """Reject an averaging rate outside [0, 1)."""
     if not 0.0 <= value < 1.0:
         msg = f"'{name}' must be in [0, 1), got {value!r}"
+        raise ValidationError(msg)
+
+
+def require_prior_mean(
+    prior_mean: Float[Array, " state"] | None, shape: tuple[int, ...]
+) -> None:
+    """Reject a prior mean that is not shaped like the parameters.
+
+    A prior mean of another shape would broadcast against them, and the
+    transform would then learn the posterior of a prior nobody asked for.
+    """
+    if prior_mean is None:
+        return
+    given = jnp.shape(prior_mean)
+    if given != shape:
+        msg = f"'prior_mean' must have the parameters' shape {shape}, got {given}"
         raise ValidationError(msg)
 
 
