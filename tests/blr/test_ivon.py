@@ -88,6 +88,7 @@ def test_jit_agrees_and_float32_stays_float32() -> None:
         ({"hess_init": -2.0}, "hess_init"),
         ({"ess": -1.0}, "ess"),
         ({"ess": 0.0}, "ess"),
+        ({"clip_radius": -1.0}, "clip_radius"),
     ],
 )
 def test_bad_options_are_rejected_by_name(kwargs, name) -> None:

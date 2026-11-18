@@ -25,6 +25,7 @@ from argminax._src.blr._optax import (
     require_non_negative,
     require_optax,
     require_positive,
+    require_prior_mean,
     require_step_size,
     step_size,
 )
@@ -231,7 +232,8 @@ def blr_low_rank(
         ValidationError: If ``rank`` is not a positive integer, ``curvature``
             is neither a known name nor a callable, a constant
             ``learning_rate`` is outside (0, 1], ``prior_precision`` is not
-            positive or ``damping`` is negative.
+            positive or ``damping`` is negative; or, from ``init`` and
+            ``update``, if ``prior_mean`` is not shaped like the parameters.
         MissingExtraError: If optax is not installed.
 
     Examples:
@@ -290,6 +292,7 @@ def blr_low_rank(
         return gx.solve(operator, vector, solver=solver)
 
     def init_fn(params: Float[Array, " state"]) -> BLRLowRankState:
+        require_prior_mean(prior_mean, params.shape)
         size = params.shape[0]
         # d = δ, U = 0: the prior
         diag_precision = jnp.full(size, prior_precision, params.dtype)
@@ -309,6 +312,8 @@ def blr_low_rank(
         # the state's dtype, set from the parameters at init, is the working one
         dtype = state.nat_mean.dtype
         grads = jnp.asarray(grads, dtype)
+        # checked here as well as in init: a state can come from another transform
+        require_prior_mean(prior_mean, grads.shape)
         size = grads.shape[0]
         centre = jnp.zeros(size, dtype) if prior_mean is None else prior_mean
         centre = jnp.asarray(centre, dtype)
