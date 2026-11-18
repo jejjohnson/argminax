@@ -76,6 +76,10 @@ def ivon(
     step size and r the clipping radius. The Gaussian it carries is
     𝒩(θ, diag(h + λ)⁻¹), around the current parameters θ.
 
+    The curvature estimate here is the squared gradient. The IVON of the
+    paper estimates the Hessian by the reparameterisation trick and adds a
+    correction term that keeps h positive; this transform does neither.
+
     Algorithm:
         1. Average the gradient into the momentum m.
         2. Average N g ⊙ g into the curvature estimate h.

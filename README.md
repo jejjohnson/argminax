@@ -38,13 +38,14 @@ argminax extends optimistix as gaussx extends lineax: its solvers are optimistix
 | Module | What it gives you |
 |---|---|
 | `argminax.solve` | `GaussNewtonCG` (Gauss–Newton and Levenberg–Marquardt with a matrix-free inner CG), `dual_solve` (the observation-space increment), `Reparametrised` (positive and bounded states), and `laplace_mode` for GMRF, GP and Markov-GP models |
+| `argminax.blr` | the Bayesian learning rule as optax transforms that carry the Gaussian during training: `blr_diagonal`, `blr_full_rank`, `blr_low_rank`, `ivon`, `newton`, and `blr_posterior`, which reads any of their states as a `Laplace` |
 | `argminax.curvature` | `Laplace`, the Gaussian $`\mathcal{N}(\hat{\mathbf{x}}, \hat{\mathbf{H}}^{-1})`$ with its covariance, log-determinant and samples; `gauss_newton` builds it from whitened residuals |
 | `argminax.diagnose` | `averaging_kernel`, `degrees_of_freedom`, `information_content`, `evidence` and the prior-precision search, exact or stochastic with a standard error |
 | `argminax.adjoint` | `KStep` and `OneStep`, the adjoints for a minimiser stopped early, as in learned 4D-Var |
 
 ## Installation
 
-argminax is not on PyPI; the stack pins it by git tag. It brings in JAX, Equinox, lineax, optimistix and gaussx. The `matfree` extra adds stochastic Lanczos quadrature for log-determinants of large operators.
+argminax is not on PyPI; the stack pins it by git tag. It brings in JAX, Equinox, lineax, optimistix and gaussx. The `matfree` extra adds stochastic Lanczos quadrature for log-determinants of large operators. The `optax` extra adds optax, for the transforms of `argminax.blr`.
 
 ```bash
 pip install "argminax @ git+https://github.com/jejjohnson/argminax.git"
@@ -120,9 +121,49 @@ x_hats = jax.jit(jax.vmap(retrieve))(batch)  # (3, 3)
 
 Nothing here is specific to this model. Swap `forward` for a radiative transfer code, a plume model or a PDE solve, and the same four lines give the retrieval, its covariance, its degrees of freedom and its gradient. The [quickstart](https://jejjohnson.github.io/argminax/quickstart/) adds the calling convention and why to run in double precision.
 
+### During training
+
+The solvers above run to a minimum first. The transforms of `argminax.blr` carry the same Gaussian while they train: each is an optax `GradientTransformation` (the Bayesian learning rule), so it drops into an optax loop, and its state reads out as the `Laplace` object used above. Here a line is fitted to 200 noisy points; the cost is quadratic, so one full-rank step with the exact curvature is the exact posterior.
+
+```python
+import lineax as lx
+
+from argminax.blr import blr_full_rank, blr_posterior
+from argminax.curvature import marginal_variance
+
+# Shapes: N = 200 observations; D = 2 parameters (slope, intercept)
+key_inputs, key_noise = jax.random.split(jax.random.key(0))
+inputs = jax.random.uniform(key_inputs, (200,), minval=-2.0, maxval=2.0)
+targets = 2.0 * inputs - 1.0 + 0.5 * jax.random.normal(key_noise, (200,))
+features = jnp.stack([inputs, jnp.ones(200)], axis=1)  # (200, 2)
+
+
+def cost(theta):
+    # 𝒥(θ) = ‖y − Φθ‖² / (2σ²)
+    return 0.5 * jnp.sum((targets - features @ theta) ** 2) / 0.5**2
+
+
+curvature = features.T @ features / 0.5**2  # C = ΦᵀΦ / σ², (2, 2)
+optimiser = blr_full_rank(
+    1.0, prior_precision=1.0, curvature=lambda mean, grad: curvature, damping=0.0
+)
+theta = jnp.zeros(2)
+state = optimiser.init(theta)
+updates, state = optimiser.update(jax.grad(cost)(theta), state)
+
+posterior = blr_posterior(state)  # an argminax.curvature.Laplace
+posterior.mode  # (2,)  [2.016, -0.989]
+jnp.sqrt(marginal_variance(posterior))  # (2,)  [0.031, 0.035]
+
+prior_cov = lx.MatrixLinearOperator(jnp.eye(2), lx.positive_semidefinite_tag)
+degrees_of_freedom(averaging_kernel(posterior, prior_cov)).value  # 1.998 of 2
+```
+
+`blr_diagonal` and `ivon` work on a parameter pytree of any size as a drop-in for `optax.adam`. The [guide](https://jejjohnson.github.io/argminax/blr/) derives the rule and says what the variance of each curvature estimate means. These need the `optax` extra: `pip install "argminax[optax] @ git+https://github.com/jejjohnson/argminax.git"`.
+
 ## Where it sits
 
-argminax is Core tier 1 of the [GeoStack](https://github.com/jejjohnson/geostack): it imports gaussx (tier 0) and extends optimistix, and everything that minimises can import it. vardax, radtrax, plumax, pyrox-gp, pyrox-lgm and pyrox-nn take their solvers, curvature and diagnostics from it. The design is the [argminax design page](https://github.com/jejjohnson/geostack/blob/main/docs/design/libraries/argminax.md).
+argminax is Core tier 1 of the [GeoStack](https://github.com/jejjohnson/geostack): it imports gaussx (tier 0) and extends optimistix and, for the transforms of `argminax.blr`, optax, and everything that minimises can import it. vardax, radtrax, plumax, pyrox-gp, pyrox-lgm and pyrox-nn take their solvers, curvature and diagnostics from it. The design is the [argminax design page](https://github.com/jejjohnson/geostack/blob/main/docs/design/libraries/argminax.md).
 
 ## Development
 
