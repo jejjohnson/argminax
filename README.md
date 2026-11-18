@@ -54,6 +54,8 @@ gain, jacobian = jax.jacobian(retrieve, argnums=(0, 1))(*args)  # (D_x, D_y), (D
 
 None of it is a new framework. The solvers of argminax are [`optimistix`](https://github.com/patrick-kidger/optimistix) solvers and its adjoints are optimistix adjoints, so `optx.minimise` and `optx.least_squares` keep working, and `jax.grad` through a converged solve is one more linear solve. The curvature it returns is a [`gaussx`](https://github.com/jejjohnson/gaussx) operator on [`lineax`](https://github.com/patrick-kidger/lineax), so a Hessian over a large state is never formed densely unless you ask. And for a model that is trained rather than solved, `argminax.blr` gives [`optax`](https://github.com/google-deepmind/optax) gradient transformations that carry the same Gaussian along the way (the Bayesian learning rule), so they drop into an optax training loop like any other optimiser.
 
+<p align="center"><img src="https://raw.githubusercontent.com/jejjohnson/geostack/main/docs/images/libraries/argminax_overview/argminax_overview.png" alt="argminax in one picture: you supply a cost, the measurement y and the parameters θ, and a solver or a training loop; they define one minimum and the Hessian there; five questions, one module each, read that Hessian; out come the retrieval, the Laplace posterior, the diagnostics, the derivatives and the trained posterior; optimistix, gaussx with lineax, and optax underneath" width="100%"></p>
+
 ## 🌟 Highlights
 
 - 🎯 **Solvers optimistix lacks**: Gauss–Newton and Levenberg–Marquardt with a matrix-free inner CG, the observation-space (dual) solve, bounded states, and the Laplace mode of GMRF, GP and Markov-GP models.
@@ -208,6 +210,15 @@ The [quickstart](https://jejjohnson.github.io/argminax/quickstart/) takes this r
 
 ## 🔬 What else is in the box
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/jejjohnson/geostack/main/docs/images/libraries/argminax_roles/argminax_roles-dark.svg">
+    <img alt="argminax on the GeoStack role ladder: algorithms (laplace_mode, the dual solves, the diagnostics, blr_posterior), the Laplace model, strategies for solving, stepping and differentiating, no primitives of its own (one step is gaussx's), and the Hessian as a gaussx structure, with optimistix as the floor its solvers and adjoints extend" src="https://raw.githubusercontent.com/jejjohnson/geostack/main/docs/images/libraries/argminax_roles/argminax_roles-light.svg" width="100%">
+  </picture>
+</p>
+
+Each public name sits on one rung of the GeoStack role ladder, by the job it does; the table lists them by module.
+
 | Module | Symbols | Notes |
 |---|---|---|
 | `argminax.solve` | `GaussNewtonCG`, `dual_solve`, `incremental_dual_solve`, `Reparametrised`, `laplace_mode`, `laplace_mode_covariance`, `laplace_mode_sites` | Gauss–Newton and Levenberg–Marquardt with a matrix-free inner CG, the observation-space (PSAS) increment and its outer loop, bounded states $`\mathbf{x} = g(\mathbf{u})`$ solved in an unconstrained control, and the damped Newton loop to the mode of GMRF, GP and Markov-GP models |
@@ -226,6 +237,13 @@ The [quickstart](https://jejjohnson.github.io/argminax/quickstart/) takes this r
 
 ## 🧩 Ecosystem
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/jejjohnson/geostack/main/docs/images/libraries/argminax_ecosystem/argminax_ecosystem-dark.svg">
+    <img alt="The packages that import argminax: vardax, pyrox-lgm and pyrox-nn in GeoML, radtrax in GeoModels, and plumax through its assim extra, each with the argminax modules it uses; argminax builds on gaussx, optimistix, lineax, JAX and Equinox, and on optax through an extra" src="https://raw.githubusercontent.com/jejjohnson/geostack/main/docs/images/libraries/argminax_ecosystem/argminax_ecosystem-light.svg" width="100%">
+  </picture>
+</p>
+
 argminax is Core tier 1 of the [GeoStack](https://github.com/jejjohnson/geostack). It owns what happens at and around a minimum, and composes the rest in:
 
 | Concern | Owner |
@@ -236,7 +254,7 @@ argminax is Core tier 1 of the [GeoStack](https://github.com/jejjohnson/geostack
 | Structured operators, Gauss–Newton operators, traces and log-determinants | [`gaussx`](https://github.com/jejjohnson/gaussx) |
 | Stochastic Lanczos quadrature (the `matfree` extra) | [`matfree`](https://github.com/pnkraemer/matfree) |
 
-Dependencies point one way: vardax, radtrax, plumax, pyrox-gp, pyrox-lgm and pyrox-nn import argminax, never the reverse. Their switch-over to its solvers, curvature and diagnostics is Wave 4 ([#12](https://github.com/jejjohnson/argminax/issues/12)).
+Dependencies point one way: vardax, radtrax, pyrox-lgm and pyrox-nn import argminax today, and plumax through its `assim` extra, never the reverse. The rest of their switch-over to its solvers, curvature and diagnostics, pyrox-gp's included, is Wave 4 ([#12](https://github.com/jejjohnson/argminax/issues/12)).
 
 ## 🌳 Repository layout
 

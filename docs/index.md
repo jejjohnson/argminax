@@ -10,6 +10,14 @@ $$
 
 argminax sits at Core tier 1 of the GeoStack: it imports gaussx and extends optimistix, as gaussx extends lineax, so its solvers and adjoints plug into `optx.minimise` and `optx.least_squares`. The design is in the GeoStack [argminax design page](https://github.com/jejjohnson/geostack/blob/main/docs/design/libraries/argminax.md), and the backlog is tracked in waves under [geostack#134](https://github.com/jejjohnson/geostack/issues/134).
 
+```{figure} https://raw.githubusercontent.com/jejjohnson/geostack/main/docs/images/libraries/argminax_overview/argminax_overview.png
+:alt: argminax in one picture: you supply a cost, the measurement y and the parameters θ, and a solver or a training loop; they define one minimum and the Hessian there; five questions, one module each, read that Hessian; out come the retrieval, the Laplace posterior, the diagnostics, the derivatives and the trained posterior
+:width: 100%
+:label: fig-overview
+
+argminax in one picture: five questions, one minimum. The schematic is kept in [geostack](https://github.com/jejjohnson/geostack/tree/main/docs/images/libraries/argminax_overview) with the stack's other library schematics.
+```
+
 :::{note} Status
 argminax is in Wave 0: the package, its CI and the reference test harness. The adjoints and the curvature at the minimum arrive in Wave 1.
 :::

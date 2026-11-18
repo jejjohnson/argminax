@@ -42,6 +42,14 @@ flowchart TD
 
 Each foundation is extended, not wrapped. A solver here is an optimistix solver and an adjoint is an optimistix adjoint, so `optx.minimise` and `optx.least_squares` keep working. A transform in `argminax.blr` is an optax `GradientTransformation`, so it composes in `optax.chain` like any other.
 
+```{figure} https://raw.githubusercontent.com/jejjohnson/geostack/main/docs/images/libraries/argminax_roles/argminax_roles-light.svg
+:alt: argminax on the GeoStack role ladder: algorithms, the Laplace model, strategies for solving, stepping and differentiating, no primitives of its own (one step is gaussx's), and the Hessian as a gaussx structure, with optimistix as the floor its solvers and adjoints extend
+:width: 100%
+:label: fig-role-ladder
+
+The same package by role rather than by import: each public name on its rung of the GeoStack role ladder. The schematic is kept in [geostack](https://github.com/jejjohnson/geostack/tree/main/docs/images/libraries/argminax_roles).
+```
+
 ## The three layers of the Bayesian learning rule
 
 optax_bayes was organised in three layers (primitives, transforms, wrappers). The same three are still visible inside `argminax._src.blr`, although most of the bottom one now belongs to gaussx.
@@ -150,6 +158,14 @@ src/argminax/
 ```
 
 ## Dependencies
+
+```{figure} https://raw.githubusercontent.com/jejjohnson/geostack/main/docs/images/libraries/argminax_ecosystem/argminax_ecosystem-light.svg
+:alt: The packages that import argminax, each with the argminax modules it uses, and what argminax builds on
+:width: 100%
+:label: fig-ecosystem
+
+Who imports argminax today, with the modules each uses, and what argminax builds on. The schematic is kept in [geostack](https://github.com/jejjohnson/geostack/tree/main/docs/images/libraries/argminax_ecosystem).
+```
 
 | Package | Required | Role |
 | --- | --- | --- |
