@@ -63,4 +63,15 @@ jobs:
           import argminax
 
           print("argminax", argminax.__version__, "imports without the test group")
+
+          # optax is an extra: the module imports, and a transform names it
+          import argminax.blr
+
+          assert importlib.util.find_spec("optax") is None, "optax is not an extra"
+          try:
+              argminax.blr.blr_diagonal()
+          except argminax.MissingExtraError as error:
+              assert "argminax[optax]" in str(error), error
+          else:
+              raise AssertionError("blr_diagonal ran without optax")
           PY

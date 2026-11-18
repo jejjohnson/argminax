@@ -73,6 +73,7 @@ nav:
   - Overview: index.md
   - Capability index: capabilities.md
   - Adjoints: adjoint.md
+  - Bayesian learning rule: blr.md
   - Curvature: curvature.md
   - Diagnostics: diagnose.md
   - Solvers: solve.md
