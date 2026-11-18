@@ -85,6 +85,9 @@ def test_jit_agrees_and_float32_stays_float32() -> None:
         ({"weight_decay": 0.0}, "weight_decay"),
         ({"beta1": 1.0}, "beta1"),
         ({"beta2": -0.1}, "beta2"),
+        ({"hess_init": -2.0}, "hess_init"),
+        ({"ess": -1.0}, "ess"),
+        ({"ess": 0.0}, "ess"),
     ],
 )
 def test_bad_options_are_rejected_by_name(kwargs, name) -> None:

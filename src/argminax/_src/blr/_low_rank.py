@@ -2,16 +2,19 @@
 
 The transform carries q(θ) = 𝒩(μ_θ, Λ_θ⁻¹) with Λ_θ = diag(d) + U Uᵀ, a
 diagonal plus a rank-R factor, updated with SLANG's rule. It stores
-O(D_θ R) numbers and a step costs O(D_θ R²), between the diagonal rule and
-the full-rank one.
+O(D_θ R) numbers and a step costs O(D_θ R²) with a built-in curvature
+estimate, between the diagonal rule and the full-rank one. A callable
+curvature returns a dense matrix, and its step costs O(D_θ³).
 """
 
 from __future__ import annotations
 
+from functools import partial
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 import einx
 import gaussx as gx
+import jax
 import jax.numpy as jnp
 import lineax as lx
 from jaxtyping import Array, Float, Int
@@ -57,6 +60,32 @@ class BLRLowRankState(NamedTuple):
     count: Int[Array, ""]
 
 
+def _scaled_left_vectors(
+    factor: Float[Array, "state factor"],
+) -> tuple[
+    Float[Array, "state kept"], Float[Array, " kept"], Float[Array, "kept factor"]
+]:
+    """The thin SVD Ũ = P S Qᵀ of a factor, as P S, the diagonal of S and Qᵀ."""
+    left, singular_values, right = jnp.linalg.svd(factor, full_matrices=False)
+    # P S, the left singular vectors scaled by the singular values
+    scaled = einx.multiply("state kept, kept -> state kept", left, singular_values)
+    return scaled, singular_values, right
+
+
+def _split(
+    scaled: Float[Array, "state kept"], rank: int
+) -> tuple[Float[Array, "state rank"], Float[Array, " state"]]:
+    """The first ``rank`` columns, and the squared row norms of the others."""
+    kept = scaled[:, :rank]
+    discarded = scaled[:, rank:]
+    # e = diag(Ũ Ũᵀ − U Uᵀ), the squared row norms of the discarded columns
+    # (jnp, not einx: nothing is discarded when K ≤ R, and einx cannot reduce
+    # over an axis of size zero)
+    residual = jnp.sum(discarded * discarded, axis=1)
+    return kept, residual
+
+
+@partial(jax.custom_jvp, nondiff_argnums=(1,))
 def _truncate(
     factor: Float[Array, "state factor"], rank: int
 ) -> tuple[Float[Array, "state rank"], Float[Array, " state"]]:
@@ -66,19 +95,70 @@ def _truncate(
 
     U Uᵀ is the best rank-R approximation of Ũ Ũᵀ, and e ≥ 0 is the diagonal
     of what was discarded. The thin SVD costs O(D_θ K²) for K columns.
+
+    The derivative is that of U Uᵀ and e, which is what the precision is made
+    of; U itself is only defined up to a rotation of its columns. JAX's own
+    SVD derivative divides by the gaps between all pairs of singular values,
+    and so is NaN whenever two are equal, as the zero ones are at the first
+    step. Only the gaps across the cut, between a kept and a discarded
+    direction, move U Uᵀ and e, so `_truncate_jvp` uses those alone.
     """
-    left, singular_values, _ = jnp.linalg.svd(factor, full_matrices=False)
-    # P S, the left singular vectors scaled by the singular values
-    scaled = einx.multiply(
-        "state factor, factor -> state factor", left, singular_values
+    scaled, _, _ = _scaled_left_vectors(factor)
+    return _split(scaled, rank)
+
+
+@_truncate.defjvp
+def _truncate_jvp(
+    rank: int,
+    primals: tuple[Float[Array, "state factor"]],
+    tangents: tuple[Float[Array, "state factor"]],
+) -> tuple[
+    tuple[Float[Array, "state rank"], Float[Array, " state"]],
+    tuple[Float[Array, "state rank"], Float[Array, " state"]],
+]:
+    """The derivative of `_truncate`, from the gaps across the cut alone.
+
+        W = dŨ Q,   M = Wᵀ (P S) + (P S)ᵀ W
+        d(P S)ᵢ = Wᵢ + Σⱼ (P S)ⱼ Mⱼᵢ / (sᵢ² − sⱼ²)
+
+    P S (D_θ, K) holds the scaled left singular vectors of Ũ, Q (K, K) the
+    right ones and s the singular values; i and j index the columns. This is
+    first-order perturbation theory for the eigenvectors Q of ŨᵀŨ, carried to
+    P S = Ũ Q. The sum runs over the j on the other side of the cut from i:
+    a pair on the same side only rotates the columns among themselves, which
+    leaves U Uᵀ and e unchanged, so it is left out, whatever its gap. A pair
+    across the cut with no gap between them has no derivative (the top R
+    directions are not unique there) and is left out as well, which gives
+    the derivative that keeps the current directions.
+    """
+    (factor,) = primals
+    (factor_dot,) = tangents
+    scaled, singular_values, right = _scaled_left_vectors(factor)
+    kept, residual = _split(scaled, rank)
+
+    # W = dŨ Q
+    rotated = einx.dot("state factor, kept factor -> state kept", factor_dot, right)
+    # M = Wᵀ (P S) + (P S)ᵀ W, the change of QᵀŨᵀŨ Q
+    cross = einx.dot("state row, state column -> row column", scaled, rotated)
+    gram_dot = cross + cross.T
+    # sᵢ² − sⱼ² at [j, i]
+    squares = singular_values * singular_values
+    gaps = einx.subtract("column, row -> row column", squares, squares)
+    is_kept = jnp.arange(squares.shape[0]) < rank
+    across_cut = einx.not_equal("row, column -> row column", is_kept, is_kept)
+    # a gap at the rounding level of the largest sᵢ² counts as no gap
+    floor = jnp.finfo(squares.dtype).eps * squares.shape[0] * jnp.max(squares)
+    resolved = across_cut & (jnp.abs(gaps) > floor)
+    mixing = jnp.where(resolved, gram_dot / jnp.where(resolved, gaps, 1.0), 0.0)
+    # d(P S) = W + (P S) (M ⊘ gaps)
+    scaled_dot = rotated + einx.dot(
+        "state row, row column -> state column", scaled, mixing
     )
-    kept = scaled[:, :rank]
-    discarded = scaled[:, rank:]
-    # e = diag(Ũ Ũᵀ − U Uᵀ), the squared row norms of the discarded columns
-    # (jnp, not einx: nothing is discarded when K ≤ R, and einx cannot reduce
-    # over an axis of size zero)
-    residual = jnp.sum(discarded * discarded, axis=1)
-    return kept, residual
+
+    kept_dot = scaled_dot[:, :rank]
+    # de = 2 Σ (P S) ⊙ d(P S) over the discarded columns (jnp: see `_split`)
+    residual_dot = 2.0 * jnp.sum(scaled[:, rank:] * scaled_dot[:, rank:], axis=1)
+    return (kept, residual), (kept_dot, residual_dot)
 
 
 def blr_low_rank(

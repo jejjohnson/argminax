@@ -15,6 +15,7 @@ from jaxtyping import Array, Float, Int, PyTree
 
 from argminax._src.blr._optax import (
     StepSize,
+    require_non_negative,
     require_optax,
     require_positive,
     require_rate,
@@ -93,10 +94,10 @@ def ivon(
         beta2: The averaging rate β₂ of the curvature estimate, in [0, 1).
         weight_decay: The weight decay λ > 0, which is also the prior
             precision.
-        hess_init: The starting value of h.
+        hess_init: The starting value of h, at least 0.
         clip_radius: The radius r of the clip on each parameter's step.
-        ess: The effective sample size N; the size of the training set for a
-            calibrated variance, 1 to use IVON as an optimiser only.
+        ess: The effective sample size N > 0; the size of the training set
+            for a calibrated variance, 1 to use IVON as an optimiser only.
 
     Returns:
         An ``optax.GradientTransformation`` whose state is an `IVONState`.
@@ -104,8 +105,9 @@ def ivon(
         λ θ is left out of the step.
 
     Raises:
-        ValidationError: If ``weight_decay`` is not positive, or ``beta1`` or
-            ``beta2`` is outside [0, 1).
+        ValidationError: If ``weight_decay`` or ``ess`` is not positive,
+            ``hess_init`` is negative, or ``beta1`` or ``beta2`` is outside
+            [0, 1).
         MissingExtraError: If optax is not installed.
 
     Examples:
@@ -140,6 +142,9 @@ def ivon(
     require_positive(weight_decay, "weight_decay")
     require_rate(beta1, "beta1")
     require_rate(beta2, "beta2")
+    # h ≥ 0 at the start and N > 0 keep h ≥ 0, so the precision h + λ stays positive
+    require_non_negative(hess_init, "hess_init")
+    require_positive(ess, "ess")
     optax = require_optax()
 
     def init_fn(params: PyTree[Float[Array, "*state"]]) -> IVONState:
