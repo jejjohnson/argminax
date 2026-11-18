@@ -102,8 +102,8 @@ def ivon(
 
     Raises:
         ValidationError: If ``weight_decay`` or ``ess`` is not positive,
-            ``hess_init`` or ``clip_radius`` is negative, or ``beta1`` or ``beta2`` is outside
-            [0, 1).
+            ``hess_init`` or ``clip_radius`` is negative, or ``beta1`` or
+            ``beta2`` is outside [0, 1).
         MissingExtraError: If optax is not installed.
 
     Examples:
