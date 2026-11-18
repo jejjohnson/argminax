@@ -220,11 +220,11 @@ Each row is the rule with one choice of family, curvature, step size and prior. 
 | Newton's method | full rank | exact | 1 | `newton` |
 | The Laplace approximation | full rank | exact, at the mean | the fixed point | `blr_full_rank` with an exact callable |
 | A conjugate (linear-Gaussian) update | full rank | exact | 1 | `blr_full_rank(1.0)` with an exact callable, as in the example |
-| Online and continual learning | any | any | $\alpha$ | read the posterior, and start the next transform from it as the prior |
+| Online and continual learning | any | any | $\alpha$ | not expressible yet, except when the previous posterior is isotropic (see below) |
 | SLANG | low rank | a Gauss–Newton factor | $\alpha$ | `blr_low_rank` |
 | IVON | diagonal | squared gradient, in this implementation | $1 - \beta_2$ | `ivon` |
 
-The prior of every transform is isotropic, $\mathcal{N}(\gvect{\mu}_0, \delta^{-1} \mat{I})$, so a Kalman measurement update with a general predictive covariance is not expressible yet.
+The prior of every transform is isotropic, $\mathcal{N}(\gvect{\mu}_0, \delta^{-1} \mat{I})$ (and `blr_diagonal` takes one scalar prior mean for every parameter), so neither a Kalman measurement update with a general predictive covariance nor a posterior handed on as the next prior is expressible yet. Starting a new transform at the old posterior's mode, or carrying the old state on, does not do it: the next updates still pull towards the configured isotropic prior, and the uncertainty learned before decays at the rate $\alpha$.
 
 ## References
 
