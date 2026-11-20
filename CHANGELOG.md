@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.0.8](https://github.com/jejjohnson/argminax/compare/v0.0.7...v0.0.8) (2026-11-20)
+
+
+### Features
+
+* **adjoint:** add safe_implicit_adjoint and TolerantLinearSolver, an implicit adjoint whose linear solve never raises inside a sampler ([089d61f](https://github.com/jejjohnson/argminax/commit/089d61f33344a269694f345765f918675d323d1e))
+* **adjoint:** add safe_implicit_adjoint and TolerantLinearSolver, an implicit adjoint whose linear solve never raises inside a sampler ([5773b48](https://github.com/jejjohnson/argminax/commit/5773b4864301cd17dedce36986df551f9d2b96cb)), closes [#87](https://github.com/jejjohnson/argminax/issues/87)
+
 ## [0.0.7](https://github.com/jejjohnson/argminax/compare/v0.0.6...v0.0.7) (2026-11-18)
 
 
