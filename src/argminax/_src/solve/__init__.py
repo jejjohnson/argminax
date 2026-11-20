@@ -13,6 +13,7 @@ from argminax._src.solve._laplace_mode import (
     laplace_mode_sites,
 )
 from argminax._src.solve._reparam import Reparametrised
+from argminax._src.solve._tolerant import TolerantLinearSolver
 
 
 __all__ = [
@@ -22,6 +23,7 @@ __all__ = [
     "LaplaceModeResult",
     "Reparametrised",
     "SiteLaplaceResult",
+    "TolerantLinearSolver",
     "dual_solve",
     "incremental_dual_solve",
     "laplace_mode",

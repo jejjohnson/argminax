@@ -14,11 +14,11 @@ The [capability index](capabilities.md) lists every public name on one page, wit
 
 | Module | Contents |
 |---|---|
-| [Adjoints](adjoint.md) | `KStep`, `OneStep`, `to_optimistix_adjoint` |
+| [Adjoints](adjoint.md) | `KStep`, `OneStep`, `safe_implicit_adjoint`, `to_optimistix_adjoint` |
 | [Bayesian learning rule](blr.md) | `blr_diagonal`, `blr_full_rank`, `blr_low_rank`, `newton`, `ivon`, `blr_posterior`, `BLRDiagonalState`, `BLRFullRankState`, `BLRLowRankState`, `IVONState` |
 | [Curvature](curvature.md) | `Laplace`, `gauss_newton`, `push_forward`, `marginal_variance`, `VarianceEstimate`, `low_rank`, `sample_by_perturbation` |
 | [Diagnostics](diagnose.md) | `averaging_kernel`, `degrees_of_freedom`, `information_content`, `evidence`, `optimize_prior_precision`, `TraceEstimate` |
-| [Solvers](solve.md) | `GaussNewtonCG`, `dual_solve`, `incremental_dual_solve`, `DualSolution`, `Reparametrised` |
+| [Solvers](solve.md) | `GaussNewtonCG`, `dual_solve`, `incremental_dual_solve`, `DualSolution`, `Reparametrised`, `TolerantLinearSolver` |
 | [Type aliases](typing.md) | `Objective`, `Residuals` |
 | [Exceptions](exceptions.md) | `ArgminaxError`, `ValidationError`, `MissingExtraError` |
 
