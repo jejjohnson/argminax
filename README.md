@@ -221,10 +221,10 @@ Each public name sits on one rung of the GeoStack role ladder, by the job it doe
 
 | Module | Symbols | Notes |
 |---|---|---|
-| `argminax.solve` | `GaussNewtonCG`, `dual_solve`, `incremental_dual_solve`, `Reparametrised`, `laplace_mode`, `laplace_mode_covariance`, `laplace_mode_sites` | Gauss–Newton and Levenberg–Marquardt with a matrix-free inner CG, the observation-space (PSAS) increment and its outer loop, bounded states $`\mathbf{x} = g(\mathbf{u})`$ solved in an unconstrained control, and the damped Newton loop to the mode of GMRF, GP and Markov-GP models |
+| `argminax.solve` | `GaussNewtonCG`, `dual_solve`, `incremental_dual_solve`, `Reparametrised`, `laplace_mode`, `laplace_mode_covariance`, `laplace_mode_sites`, `TolerantLinearSolver` | Gauss–Newton and Levenberg–Marquardt with a matrix-free inner CG, the observation-space (PSAS) increment and its outer loop, bounded states $`\mathbf{x} = g(\mathbf{u})`$ solved in an unconstrained control, and the damped Newton loop to the mode of GMRF, GP and Markov-GP models, and a lineax solver whose stopped or non-finite solves return values instead of raising |
 | `argminax.curvature` | `Laplace`, `gauss_newton`, `marginal_variance`, `low_rank`, `push_forward`, `sample_by_perturbation` | The Gaussian $`\mathcal{N}(\hat{\mathbf{x}}, \boldsymbol{\Sigma}_{x \mid y})`$ held by its precision as a PSD-tagged operator, so $`\boldsymbol{\Sigma}_{x \mid y}`$ is never formed |
 | `argminax.diagnose` | `averaging_kernel`, `degrees_of_freedom`, `information_content`, `evidence`, `optimize_prior_precision` | Exact for a small state, stochastic with a standard error for a large one, and always under `jit` and `vmap` |
-| `argminax.adjoint` | `KStep`, `OneStep`, `to_optimistix_adjoint` | Optimistix adjoints for a minimiser stopped early, passed as `adjoint=`; `to_optimistix_adjoint` maps a pipekit-cycle adjoint spec onto one |
+| `argminax.adjoint` | `KStep`, `OneStep`, `safe_implicit_adjoint`, `to_optimistix_adjoint` | Optimistix adjoints for a minimiser stopped early, passed as `adjoint=`; `safe_implicit_adjoint` is the implicit adjoint whose linear solve never raises inside a sampler; `to_optimistix_adjoint` maps a pipekit-cycle adjoint spec onto one |
 | `argminax.blr` | `blr_diagonal`, `ivon`, `blr_full_rank`, `blr_low_rank`, `newton`, `preconditioned_sgd`, `scale_by_preconditioner`, `blr_posterior` | The Bayesian learning rule as optax transforms; `blr_posterior` reads any of their states as a `Laplace`, so the diagnostics above apply during training too |
 
 ## 📖 Documentation

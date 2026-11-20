@@ -8,54 +8,22 @@ the state size D_x is limited by memory for vectors, not matrices.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
 
 import lineax as lx
 import optimistix as optx
-from jaxtyping import Array, PyTree, Scalar
+from jaxtyping import PyTree, Scalar
 
 # optimistix's own flag-to-callback conversion; private, but optimistix is pinned
 # to 0.1.x (see "Boundaries" in AGENTS.md)
 from optimistix._misc import default_verbose
 
+from argminax._src.solve._tolerant import TolerantLinearSolver
 from argminax.exceptions import ValidationError
 
 
 __all__ = [
     "GaussNewtonCG",
 ]
-
-
-class _TruncatedNormalCG(lx.AbstractLinearSolver):
-    """CG on the normal equations, accepting the iterate when the budget runs out.
-
-    Inexact Gauss–Newton takes a truncated CG solve as its step: the iterate
-    after ``max_steps`` is still a descent direction. lineax reports a capped
-    solve as ``max_steps_reached``, which would stop the outer solve, so this
-    solver reports it as successful; every other failure passes through.
-    """
-
-    inner: lx.Normal
-
-    def init(self, operator: lx.AbstractLinearOperator, options: dict[str, Any]) -> Any:
-        return self.inner.init(operator, options)
-
-    def compute(
-        self, state: Any, vector: PyTree[Array], options: dict[str, Any]
-    ) -> tuple[PyTree[Array], lx.RESULTS, dict[str, Any]]:
-        solution, result, stats = self.inner.compute(state, vector, options)
-        truncated = result == lx.RESULTS.max_steps_reached
-        result = lx.RESULTS.where(truncated, lx.RESULTS.successful, result)
-        return solution, result, stats
-
-    def transpose(self, state: Any, options: dict[str, Any]) -> Any:
-        return self.inner.transpose(state, options)
-
-    def conj(self, state: Any, options: dict[str, Any]) -> Any:
-        return self.inner.conj(state, options)
-
-    def assume_full_rank(self) -> bool:
-        return self.inner.assume_full_rank()
 
 
 class GaussNewtonCG(optx.AbstractGaussNewton):
@@ -196,7 +164,8 @@ class GaussNewtonCG(optx.AbstractGaussNewton):
         )
         # CG on J_rᵀ J_r δ = −J_rᵀ r, from J_r v and J_rᵀ v alone
         normal_equations = lx.Normal(conjugate_gradient)
-        linear_solver = _TruncatedNormalCG(normal_equations)
+        # a capped CG solve is still a descent direction, so it is the step
+        linear_solver = TolerantLinearSolver(normal_equations, zero_if_nonfinite=False)
         self.rtol = rtol
         self.atol = atol
         self.norm = norm
