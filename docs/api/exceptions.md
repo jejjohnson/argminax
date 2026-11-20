@@ -2,13 +2,6 @@
 
 Every error raised by the package derives from [`ArgminaxError`][argminax.ArgminaxError] *and* from the closest standard-library exception.
 
-```mermaid
-graph TD
-    E[Exception] --> A[ArgminaxError]
-    V[ValueError] --> VE[ValidationError]
-    A --> VE
-    I[ImportError] --> ME[MissingExtraError]
-    A --> ME
-```
+![argminax's exceptions: ArgminaxError inherits from Exception; ValidationError inherits from ArgminaxError and ValueError and is raised in every module; MissingExtraError inherits from ArgminaxError and ImportError and names the missing optax, matfree or numpyro extra](https://raw.githubusercontent.com/jejjohnson/geostack/main/docs/images/libraries/argminax_exceptions/argminax_exceptions-light.svg)
 
 ::: argminax.exceptions

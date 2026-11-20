@@ -48,8 +48,9 @@ class ValidationError(ArgminaxError, ValueError):
 class MissingExtraError(ArgminaxError, ImportError):
     """Raised when a function needs an optional extra that is not installed.
 
-    The functions behind the ``argminax[matfree]`` extra import it when they
-    are called and raise this error, whose message names the extra to install.
+    The functions behind the ``optax``, ``matfree`` and ``numpyro`` extras
+    import them when they are called and raise this error, whose message
+    names the extra to install.
     Also an `ImportError`, so ``except ImportError`` still catches it.
 
     Examples:
