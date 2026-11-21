@@ -444,8 +444,9 @@ class CovarianceLaplaceResult(eqx.Module):
         mean: The posterior mean μ_f∣y given the sites at f̂, equal to f̂ at
             convergence.
         variance: diag(Σ_f∣y), the marginal variances.
-        log_marginal: The Laplace log-marginal at f̂,
-            ∑ₙ log p(yₙ ∣ f̂ₙ) − ½ (f̂ − μ_f)ᵀ K_XX⁻¹ (f̂ − μ_f)
+        log_marginal: The Laplace log-marginal, with the objective evaluated
+            exactly at f₁ = ``mean`` and the sites at f̂,
+            ∑ₙ log p(yₙ ∣ f₁ₙ) − ½ (f₁ − μ_f)ᵀ K_XX⁻¹ (f₁ − μ_f)
             − ½ log |I + Λ_site^½ K_XX Λ_site^½|.
         n_iter: Iterations taken.
         converged: Whether the last step met the tolerance.
@@ -622,26 +623,26 @@ def laplace_mode_covariance(
 
     # --- the Gaussian and the log-marginal at f̂ ---
     information, precision = _sites(log_likelihood, mode, precision_floor)
-    mean = _covariance_update(
-        mode, prior_cov, prior_mean, log_likelihood, precision_floor
-    )
     regularised = _regularised(prior_cov, precision)
+    weights, mean = _newton_target(
+        prior_cov, prior_mean, regularised, information, precision
+    )
     variance = _marginal_variance(prior_cov, regularised)
-    # f̂ − μ_f
-    residual = mode - prior_mean
-    # K_XX⁻¹ (f̂ − μ_f) = g(f̂) at the fixed point (Rasmussen and Williams 2006,
-    # section 3.4), which avoids a solve against a badly conditioned K_XX
-    gradient, _ = _site_derivatives(log_likelihood, mode)
-    # ½ (f̂ − μ_f)ᵀ K_XX⁻¹ (f̂ − μ_f)
-    quadratic = 0.5 * einx.dot("state, state ->", residual, gradient)
+    # f₁ − μ_f = K_XX w, so K_XX⁻¹ (f₁ − μ_f) = w exactly at f₁ = mean, with no
+    # solve against a badly conditioned K_XX; Ψ is stationary at the mode, so
+    # evaluating it exactly at f₁ costs a second-order error, where the
+    # identity K_XX⁻¹ (f̂ − μ_f) = g(f̂) costs a first-order one
+    residual = mean - prior_mean
+    # ½ (f₁ − μ_f)ᵀ K_XX⁻¹ (f₁ − μ_f) = ½ (f₁ − μ_f)ᵀ w
+    quadratic = 0.5 * einx.dot("state, state ->", residual, weights)
     # log |I + Λ_site^½ K_XX Λ_site^½|, from the Cholesky of a matrix whose
     # eigenvalues are at least one, rather than the difference of two large
     # log-determinants
     log_det = gx.logdet(_whitened_sites(prior_cov, precision))
-    site_log_densities = log_likelihood(mode)
-    # ∑ₙ log p(yₙ ∣ f̂ₙ)
+    site_log_densities = log_likelihood(mean)
+    # ∑ₙ log p(yₙ ∣ f₁ₙ)
     log_density = einx.sum("state ->", site_log_densities)
-    # ∑ₙ log p(yₙ ∣ f̂ₙ) − ½ (f̂ − μ_f)ᵀ K_XX⁻¹ (f̂ − μ_f)
+    # ∑ₙ log p(yₙ ∣ f₁ₙ) − ½ (f₁ − μ_f)ᵀ K_XX⁻¹ (f₁ − μ_f)
     #   − ½ log |I + Λ_site^½ K_XX Λ_site^½|
     log_marginal = log_density - quadratic - 0.5 * log_det
     return CovarianceLaplaceResult(
@@ -689,15 +690,29 @@ def _covariance_update(
 ) -> Float[Array, " state"]:
     """One undamped update f ↦ μ_f + K_XX (K_XX + Λ_site⁻¹)⁻¹ (μ_site − μ_f)."""
     information, precision = _sites(log_likelihood, latent, precision_floor)
+    regularised = _regularised(prior_cov, precision)
+    _, target = _newton_target(
+        prior_cov, prior_mean, regularised, information, precision
+    )
+    return target
+
+
+def _newton_target(
+    prior_cov: lx.AbstractLinearOperator,
+    prior_mean: Float[Array, " state"],
+    regularised: lx.AbstractLinearOperator,
+    information: Float[Array, " state"],
+    precision: Float[Array, " state"],
+) -> tuple[Float[Array, " state"], Float[Array, " state"]]:
+    """w = (K_XX + Λ_site⁻¹)⁻¹ (μ_site − μ_f) and f₁ = μ_f + K_XX w."""
     # μ_site = Λμ_site / Λ_site, the sites at f as a Gaussian pseudo-target
     pseudo_target = information / precision
-    regularised = _regularised(prior_cov, precision)
     # (K_XX + Λ_site⁻¹)⁻¹ (μ_site − μ_f)
     weights = gx.solve(regularised, pseudo_target - prior_mean)
     # K_XX (K_XX + Λ_site⁻¹)⁻¹ (μ_site − μ_f)
     shift = prior_cov.mv(weights)
     # μ_f + K_XX (K_XX + Λ_site⁻¹)⁻¹ (μ_site − μ_f)
-    return prior_mean + shift
+    return weights, prior_mean + shift
 
 
 def _marginal_variance(

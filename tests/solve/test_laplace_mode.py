@@ -291,6 +291,52 @@ def test_covariance_log_marginal_is_finite_on_a_badly_conditioned_float32_prior(
     assert abs(float(single.log_marginal) - float(double.log_marginal)) <= 1e-3
 
 
+def _student_t_problem(dtype):
+    """40 noisy points of sin(x) with two outliers, under a Student-t likelihood."""
+    generator = np.random.default_rng(0)
+    inputs_np = np.linspace(-3.0, 3.0, 40)
+    targets_np = np.sin(inputs_np) + 0.1 * generator.normal(size=40)
+    targets_np[12], targets_np[28] = 4.0, -4.0
+    inputs = jnp.asarray(inputs_np, dtype)
+    targets = jnp.asarray(targets_np, dtype)
+    differences = inputs[:, None] - inputs[None, :]
+    jitter = 1e-6 * jnp.eye(40, dtype=dtype)
+    kernel = jnp.exp(-0.5 * differences**2 / 0.7**2) + jitter
+    dof, scale = 3.0, 0.3
+
+    def log_likelihood(latent):
+        # log Student-t(yₙ ∣ fₙ, ν = 3, s = 0.3)
+        standardised = (targets - latent) / scale
+        normaliser = (
+            jax.scipy.special.gammaln((dof + 1) / 2)
+            - jax.scipy.special.gammaln(dof / 2)
+            - 0.5 * jnp.log(dof * jnp.pi)
+            - jnp.log(scale)
+        )
+        return normaliser - (dof + 1) / 2 * jnp.log1p(standardised**2 / dof)
+
+    prior = lx.MatrixLinearOperator(kernel, _PSD)
+    return prior, jnp.zeros(40, dtype), log_likelihood
+
+
+@pytest.mark.parametrize(("dtype", "tolerance"), [("float64", 1e-5), ("float32", 5e-5)])
+def test_covariance_log_marginal_is_accurate_at_a_mode_converged_to_tolerance(
+    dtype: str, tolerance: float
+) -> None:
+    """#94: the fixed-point identity K_XX⁻¹ (f̂ − μ_f) = g(f̂) gave an evidence
+    error first order in the mode error, 3e-4 in float32 at tol 1e-6."""
+    reference = laplace_mode_covariance(
+        *_student_t_problem(jnp.float64), max_iter=5000, tol=1e-12, damping=0.3
+    )
+    assert bool(reference.converged)
+    fit = laplace_mode_covariance(
+        *_student_t_problem(jnp.dtype(dtype)), max_iter=200, tol=1e-6, damping=0.3
+    )
+    assert bool(fit.converged)
+    error = abs(float(fit.log_marginal) - float(reference.log_marginal))
+    assert error <= tolerance
+
+
 @pytest.mark.parametrize("bits", [64, 32])
 def test_port_reproduces_pyrox_markov_inference(bits: int) -> None:
     data = PYROX[bits]
