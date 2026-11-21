@@ -26,7 +26,7 @@ from __future__ import annotations
 from argminax.exceptions import ArgminaxError, MissingExtraError, ValidationError
 
 
-__version__ = "0.0.8"
+__version__ = "0.0.9"
 
 __all__ = [
     "ArgminaxError",

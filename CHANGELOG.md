@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.9](https://github.com/jejjohnson/argminax/compare/v0.0.8...v0.0.9) (2026-11-21)
+
+
+### Bug Fixes
+
+* **solve:** keep the laplace_mode_covariance log marginal finite on a badly conditioned float32 prior ([#92](https://github.com/jejjohnson/argminax/issues/92)) ([da6c765](https://github.com/jejjohnson/argminax/commit/da6c7652b98c093812cd09fc20dbc28e35402dc2)), closes [#91](https://github.com/jejjohnson/argminax/issues/91)
+
 ## [0.0.8](https://github.com/jejjohnson/argminax/compare/v0.0.7...v0.0.8) (2026-11-20)
 
 
