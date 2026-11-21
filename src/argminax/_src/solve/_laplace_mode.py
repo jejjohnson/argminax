@@ -629,14 +629,15 @@ def laplace_mode_covariance(
     variance = _marginal_variance(prior_cov, regularised)
     # f̂ − μ_f
     residual = mode - prior_mean
-    # K_XX⁻¹ (f̂ − μ_f)
-    whitened = gx.solve(prior_cov, residual)
+    # K_XX⁻¹ (f̂ − μ_f) = g(f̂) at the fixed point (Rasmussen and Williams 2006,
+    # section 3.4), which avoids a solve against a badly conditioned K_XX
+    gradient, _ = _site_derivatives(log_likelihood, mode)
     # ½ (f̂ − μ_f)ᵀ K_XX⁻¹ (f̂ − μ_f)
-    quadratic = 0.5 * einx.dot("state, state ->", residual, whitened)
-    # ∑ₙ log Λ_site,n
-    log_site_precision = einx.sum("state ->", jnp.log(precision))
-    # log |I + Λ_site^½ K_XX Λ_site^½| = log |K_XX + Λ_site⁻¹| + ∑ₙ log Λ_site,n
-    log_det = gx.logdet(regularised) + log_site_precision
+    quadratic = 0.5 * einx.dot("state, state ->", residual, gradient)
+    # log |I + Λ_site^½ K_XX Λ_site^½|, from the Cholesky of a matrix whose
+    # eigenvalues are at least one, rather than the difference of two large
+    # log-determinants
+    log_det = gx.logdet(_whitened_sites(prior_cov, precision))
     site_log_densities = log_likelihood(mode)
     # ∑ₙ log p(yₙ ∣ f̂ₙ)
     log_density = einx.sum("state ->", site_log_densities)
@@ -664,6 +665,18 @@ def _regularised(
     site_variance = lx.DiagonalLinearOperator(1.0 / precision)
     # K_XX + Λ_site⁻¹
     untagged = prior_cov + site_variance
+    return lx.TaggedLinearOperator(untagged, _PSD)
+
+
+def _whitened_sites(
+    prior_cov: lx.AbstractLinearOperator, precision: Float[Array, " state"]
+) -> lx.AbstractLinearOperator:
+    """B = I + Λ_site^½ K_XX Λ_site^½, tagged positive semidefinite."""
+    # Λ_site^½
+    root = lx.DiagonalLinearOperator(jnp.sqrt(precision))
+    identity = lx.IdentityLinearOperator(prior_cov.in_structure())
+    # I + Λ_site^½ K_XX Λ_site^½
+    untagged = identity + root @ prior_cov @ root
     return lx.TaggedLinearOperator(untagged, _PSD)
 
 

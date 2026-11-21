@@ -268,6 +268,29 @@ def test_port_reproduces_pyrox_dense_inference_in_float32() -> None:
     assert _relative(fit.variance, data["laplace_q_var"]) <= 1e-5
 
 
+def test_covariance_log_marginal_is_finite_on_a_badly_conditioned_float32_prior() -> (
+    None
+):
+    """#91: an RBF Gram matrix on 200 dense points, solved against in float32,
+    gave a NaN log-marginal while the mode and the variances were finite."""
+
+    def fit(dtype):
+        inputs = jnp.linspace(0.0, 10.0, 200, dtype=dtype)
+        differences = inputs[:, None] - inputs[None, :]
+        jitter = 1e-6 * jnp.eye(200, dtype=dtype)
+        kernel = jnp.exp(-0.5 * differences**2) + jitter
+        labels = (jnp.sin(inputs) > 0).astype(dtype)
+        prior = lx.MatrixLinearOperator(kernel, _PSD)
+        return laplace_mode_covariance(prior, jnp.zeros(200, dtype), _bernoulli(labels))
+
+    single = fit(jnp.float32)
+    double = fit(jnp.float64)
+    assert single.log_marginal.dtype == jnp.float32
+    assert bool(single.converged)
+    assert bool(jnp.isfinite(single.log_marginal))
+    assert abs(float(single.log_marginal) - float(double.log_marginal)) <= 1e-3
+
+
 @pytest.mark.parametrize("bits", [64, 32])
 def test_port_reproduces_pyrox_markov_inference(bits: int) -> None:
     data = PYROX[bits]
