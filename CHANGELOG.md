@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.10](https://github.com/jejjohnson/argminax/compare/v0.0.9...v0.0.10) (2026-11-21)
+
+
+### Bug Fixes
+
+* **solve:** evaluate the laplace_mode_covariance objective exactly at the newton target from the mode ([#95](https://github.com/jejjohnson/argminax/issues/95)) ([3a42cc7](https://github.com/jejjohnson/argminax/commit/3a42cc77ef0898997104e43a0c0f7a515ca5d164)), closes [#94](https://github.com/jejjohnson/argminax/issues/94)
+
 ## [0.0.9](https://github.com/jejjohnson/argminax/compare/v0.0.8...v0.0.9) (2026-11-21)
 
 
