@@ -1,4 +1,4 @@
-"""gaussx's `laplace_mode` on the problems of `tests/_gaussx_problems.py`, for argminax#86.
+"""gaussx's `laplace_mode` on the problems of `tests/_gaussx_problems.py` (#86).
 
 gaussx 0.8.0 removed `laplace_mode` (gaussx#848), so this runs only against
 gaussx v0.6.13 to v0.7.x. From the repository root, in an environment with that gaussx:
@@ -53,7 +53,9 @@ def main(path: str) -> None:
     likelihood = counts(20)
 
     def log_marginal(log_tau):
-        return gx.laplace_mode(intrinsic_prior(20, jnp.exp(log_tau)), likelihood).log_marginal
+        return gx.laplace_mode(
+            intrinsic_prior(20, jnp.exp(log_tau)), likelihood
+        ).log_marginal
 
     out["log_marginal_grad"] = np.asarray(jax.grad(log_marginal)(LOG_TAU))
 
@@ -63,7 +65,12 @@ def main(path: str) -> None:
         gx.vb_mean_correction(fit, prior, likelihood, subspace=jnp.array(VB_SUBSPACE))
     )
     np.savez(path, **out)
-    logger.info("gaussx {} wrote {}: {}", gx.__version__ if hasattr(gx, "__version__") else "?", path, sorted(out))
+    logger.info(
+        "gaussx {} wrote {}: {}",
+        gx.__version__ if hasattr(gx, "__version__") else "?",
+        path,
+        sorted(out),
+    )
 
 
 if __name__ == "__main__":
