@@ -132,7 +132,8 @@ def _dense(out: dict[str, np.ndarray]) -> None:
         ),
     }
     prior = GPPrior(kernel=RBF(init_lengthscale=1.0, init_variance=1.0), X=inputs)
-    out.update(dense_K=np.asarray(_prior_K(prior)), dense_mean=np.asarray(prior.mean(inputs)))
+    out["dense_K"] = np.asarray(_prior_K(prior))
+    out["dense_mean"] = np.asarray(prior.mean(inputs))
     # tight settings, so each eager loop stops at its fixed point
     strategies = {
         "ep": ExpectationPropagation(max_iter=500, tol=1e-12),

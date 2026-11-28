@@ -1,4 +1,4 @@
-"""The differentiable fixed-point loop over Gaussian sites, for EP and posterior linearisation.
+"""The differentiable fixed-point loop over Gaussian sites, for EP and PL.
 
 One site update is the caller's (and gaussx's: `gaussx.cavity_distribution`,
 `gaussx.ep_tilted_moments`, `gaussx.newton_update`,
@@ -45,7 +45,7 @@ class SiteFixedPoint(eqx.Module):
 
 
 def _default_adjoint() -> optx.ImplicitAdjoint:
-    """safe_implicit_adjoint(GMRES(rtol=1e-10, atol=1e-10, restart=20, max_steps=50))."""
+    """safe_implicit_adjoint(GMRES(rtol=atol=1e-10, restart=20, max_steps=50))."""
     # imported here: argminax._src.adjoint imports argminax._src.solve._tolerant,
     # so a module-level import would be circular
     from argminax._src.adjoint import safe_implicit_adjoint
@@ -61,6 +61,12 @@ def _floored_tolerance(tol: float, sites: PyTree[Array]) -> float:
     # a host constant, so the floor also works under jit
     epsilon = float(jnp.finfo(dtype).eps)
     return max(tol, 64.0 * epsilon)
+
+
+def _max_norm(tree: PyTree[Array]) -> Array:
+    """‖·‖_∞ over a pytree, in the default float dtype."""
+    norm = optx.max_norm(tree)
+    return norm.astype(jnp.result_type(float))
 
 
 def site_fixed_point(
@@ -117,10 +123,12 @@ def site_fixed_point(
 
     Returns:
         The `SiteFixedPoint`. A non-finite iterate is returned, with
-        ``converged`` false, rather than raised, and its gradient stays
-        non-finite so that a sampler rejects the point. An update that cycles
-        (EP on a non-log-concave likelihood can) also ends with ``converged``
-        false, which is the only signal of it.
+        ``converged`` false, rather than raised, so a log density built on it
+        stays non-finite and a sampler rejects the point; the default adjoint
+        then solves for v = 0 instead of raising (`TolerantLinearSolver`), so
+        the backward pass raises nothing either. An update that cycles (EP on
+        a non-log-concave likelihood can) also ends with ``converged`` false,
+        which is the only signal of it.
 
     Raises:
         ValidationError: If ``max_iter`` is not a positive integer, ``tol`` is
@@ -136,7 +144,9 @@ def site_fixed_point(
         ...     # T(s) = (1 − α) s + α (ρ s + θ), with α = ½ and ρ = 0.3
         ...     return 0.5 * sites + 0.5 * (0.3 * sites + theta)
         >>> theta = jnp.array([1.0, 2.0])
-        >>> fit = site_fixed_point(update, jnp.zeros(2), theta, tol=1e-10)
+        >>> fit = site_fixed_point(
+        ...     update, jnp.zeros(2), theta, max_iter=100, tol=1e-10
+        ... )
         >>> bool(fit.converged), bool(jnp.allclose(fit.sites, theta / 0.7))
         (True, True)
 
@@ -184,7 +194,12 @@ def site_fixed_point(
     # --- the loop ---
     floored_tol = _floored_tolerance(tol, sites)
     # |Δsⱼ| < (tol / 10) (1 + |sⱼ|), per component
-    solver = optx.FixedPointIteration(rtol=0.1 * floored_tol, atol=0.1 * floored_tol)
+    # the norm in the default float dtype, the dtype optimistix starts its
+    # relative error in: float32 sites under jax_enable_x64 otherwise give a
+    # float32 error against a float64 start, which lax.while_loop rejects
+    solver = optx.FixedPointIteration(
+        rtol=0.1 * floored_tol, atol=0.1 * floored_tol, norm=_max_norm
+    )
     solution = optx.fixed_point(
         update,
         solver,

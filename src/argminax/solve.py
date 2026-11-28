@@ -13,6 +13,7 @@ Every solver here is an optimistix solver, so ``optx.minimise`` and
 | `laplace_mode` | the damped Newton loop to the mode of a GMRF model (precision form) |
 | `laplace_mode_covariance` | the same for a GP with prior covariance K_XX |
 | `laplace_mode_sites` | the same given a posterior-mean map of sites (Markov GPs) |
+| `site_fixed_point` | the differentiable loop over Gaussian sites (EP, PL) |
 | `TolerantLinearSolver` | a lineax solver whose failed solves return values |
 
 `laplace_mode_covariance` and `laplace_mode_sites` differentiate their mode
@@ -30,6 +31,7 @@ from argminax._src.solve import (
     GaussNewtonCG,
     LaplaceModeResult,
     Reparametrised,
+    SiteFixedPoint,
     SiteLaplaceResult,
     TolerantLinearSolver,
     dual_solve,
@@ -37,6 +39,7 @@ from argminax._src.solve import (
     laplace_mode,
     laplace_mode_covariance,
     laplace_mode_sites,
+    site_fixed_point,
 )
 
 
@@ -46,6 +49,7 @@ __all__ = [
     "GaussNewtonCG",
     "LaplaceModeResult",
     "Reparametrised",
+    "SiteFixedPoint",
     "SiteLaplaceResult",
     "TolerantLinearSolver",
     "dual_solve",
@@ -53,4 +57,5 @@ __all__ = [
     "laplace_mode",
     "laplace_mode_covariance",
     "laplace_mode_sites",
+    "site_fixed_point",
 ]
