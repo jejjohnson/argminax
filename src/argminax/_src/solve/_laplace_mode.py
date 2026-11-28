@@ -540,29 +540,45 @@ class CovarianceLaplaceResult(eqx.Module):
         site_precision: The site precision Λ_site at f̂.
         mean: The posterior mean μ_f∣y given the sites at f̂, equal to f̂ at
             convergence.
-        variance: diag(Σ_f∣y), the marginal variances.
-        log_marginal: The Laplace log-marginal, with the objective evaluated
-            exactly at f₁ = ``mean`` and the sites at f̂,
+        variance: diag(Σ_f∣y), the marginal variances; ``None`` when the fit
+            was made with ``with_variance=False``.
+        log_marginal: The Laplace log-marginal by `gaussx.site_log_evidence`,
+            with the objective evaluated exactly at f₁ = ``mean`` and the
+            sites at f̂; ``None`` when the fit was made with
+            ``with_log_marginal=False``. For an exact solver it is the
+            standard form
             ∑ₙ log p(yₙ ∣ f₁ₙ) − ½ (f₁ − μ_f)ᵀ K_XX⁻¹ (f₁ − μ_f)
-            − ½ log |I + Λ_site^½ K_XX Λ_site^½|.
+            − ½ log |I + Λ_site^½ K_XX Λ_site^½|,
+            and for a stochastic log-determinant the equal
+            pseudo-observation form, which needs only solves against and the
+            log-determinant of A = K_XX + Λ_site⁻¹.
         n_iter: Iterations taken.
         converged: Whether the last step met the tolerance.
         prior_cov: The prior covariance K_XX the fit was made with.
+        site_posterior: The Gaussian at f̂ as a `gaussx.SitePosterior`, which
+            solves through the fit's solver strategy: its ``variance`` gives
+            diag(Σ_f∣y) later, and its ``covariance`` Σ_f∣y as a lazy
+            operator.
     """
 
     mode: Float[Array, " state"]
     site_information: Float[Array, " state"]
     site_precision: Float[Array, " state"]
     mean: Float[Array, " state"]
-    variance: Float[Array, " state"]
-    log_marginal: Float[Array, ""]
+    variance: Float[Array, " state"] | None
+    log_marginal: Float[Array, ""] | None
     n_iter: Int[Array, ""]
     converged: Bool[Array, ""]
     prior_cov: lx.AbstractLinearOperator
+    site_posterior: gx.SitePosterior
 
     @property
     def posterior(self) -> Laplace:
-        """𝒩(f̂, Σ_f∣y) as a `Laplace`, with precision K_XX⁻¹ + Λ_site."""
+        """𝒩(f̂, Σ_f∣y) as a `Laplace`, with precision K_XX⁻¹ + Λ_site.
+
+        Built on access, from lazy operators: nothing is densified until the
+        `Laplace` is used.
+        """
         # K_XX⁻¹
         inverse = gx.inv(self.prior_cov)
         # Λ_site as a diagonal matrix
@@ -610,10 +626,14 @@ def laplace_mode_covariance(
     damping: float = 1.0,
     precision_floor: float = 1e-6,
     adjoint: optx.ImplicitAdjoint | None = None,
+    solver: gx.AbstractSolverStrategy | None = None,
+    with_variance: bool = True,
+    with_log_marginal: bool = True,
+    key: Array | None = None,
 ) -> CovarianceLaplaceResult:
     """Laplace approximation of a GP with prior covariance K_XX, by damped Newton.
 
-        f_Newton = μ_f + K_XX (K_XX + Λ_site⁻¹)⁻¹ (μ_site − μ_f)
+        f_Newton = μ_f + K_XX A⁻¹ (μ_site − μ_f),   A = K_XX + Λ_site⁻¹
         f ← (1 − α) f + α f_Newton
 
     f ∈ ℝ^N are the latent values at the N training inputs X, with prior mean
@@ -621,17 +641,36 @@ def laplace_mode_covariance(
     at f, with Λ_site = max(−h, floor), g = ∇_f log p and h = diag(∇²_f log p),
     are a Gaussian pseudo-likelihood with mean μ_site = Λμ_site / Λ_site, and
     f_Newton is the posterior mean under it (Rasmussen and Williams 2006,
-    algorithm 3.1). This is the loop of pyrox-gp's ``LaplaceInference`` and
-    ``GaussNewtonInference`` (which differ only in their floor), as a
-    ``lax.while_loop``.
+    algorithm 3.1), by `gaussx.site_posterior`. Every solve against A goes
+    through ``solver``, so with an iterative strategy and a matrix-free K_XX
+    no N × N matrix is formed. This is the loop of pyrox-gp's
+    ``LaplaceInference`` and ``GaussNewtonInference`` (which differ only in
+    their floor), as a ``lax.while_loop``.
+
+    ``solver=None`` (or ``gaussx.DenseSolver``) factors A densely and gives
+    the standard, exact log-marginal; ``gaussx.CGSolver``, with or without a
+    preconditioner, and ``gaussx.BBMMSolver`` solve by CG and give the
+    pseudo-observation form with a stochastic log-determinant (the solver
+    table is on the ``argminax.solve`` API page).
+
+    **Inexact Newton.** An iterative solver leaves a residual in every step,
+    and the test ‖Δf‖_∞ < tol cannot resolve below it: give the solver an
+    rtol (and atol) at least ten times tighter than ``tol``, relative to the
+    scale of f. A strategy built with ``throw=True`` (gaussx's default)
+    raises when it runs out of steps, from inside the loop; inside a sampler
+    such as NUTS build it with ``throw=False``, and ``converged`` reports the
+    failure.
 
     Algorithm:
         1. From f = μ_f, iterate the damped update until ‖Δf‖_∞ < tol (tol
-           floored at 64 machine epsilons of the dtype) or ``max_iter``.
+           floored at 64 machine epsilons of the dtype) or ``max_iter``; each
+           step is `gaussx.site_posterior` with ``solver``.
         2. Make the mode implicit through its fixed point f̂ = μ_f∣y(f̂),
            with the tangent solve of ``adjoint`` (matrix-free by default).
-        3. At f̂: the sites, the posterior mean and marginal variances, and the
-           Laplace log-marginal.
+        3. At f̂: the sites and the posterior mean (`gaussx.site_posterior`),
+           the marginal variances (``SitePosterior.variance``) and the
+           Laplace log-marginal (`gaussx.site_log_evidence`), each when asked
+           for.
 
     Args:
         prior_cov: K_XX, (N, N), tagged positive semidefinite (jitter included).
@@ -658,14 +697,26 @@ def laplace_mode_covariance(
             for the dense LU used before, or a tighter GMRES for a hard
             problem; an rtol far below the accuracy of the solves in the loop
             only spends steps.
+        solver: The gaussx solver strategy for every solve against
+            A = K_XX + Λ_site⁻¹, in the loop, in the tangents and at the
+            mode. ``None`` is one dense Cholesky of A per step (a structured
+            K_XX is densified, with a ``gaussx.DenseFallbackWarning``).
+        with_variance: Whether to compute ``variance``: N solves against A
+            with an iterative solver, one at a time. Pass ``False`` for a
+            large N, and ask ``site_posterior.variance`` later.
+        with_log_marginal: Whether to compute ``log_marginal``.
+        key: PRNG key of a stochastic log-determinant's probes in
+            ``log_marginal``; ``None`` uses the solver's own seed. Ignored by
+            an exact solver.
 
     Returns:
         The `CovarianceLaplaceResult`.
 
     Raises:
         ValidationError: If ``prior_cov`` is not tagged positive semidefinite,
-            ``max_iter``, ``tol`` or ``damping`` is out of range, or
-            ``adjoint`` is not an ``optx.ImplicitAdjoint``.
+            ``max_iter``, ``tol`` or ``damping`` is out of range, ``adjoint``
+            is not an ``optx.ImplicitAdjoint`` or ``solver`` is not a gaussx
+            solver strategy.
 
     Examples:
         Bernoulli labels on an independent prior:
@@ -688,6 +739,36 @@ def laplace_mode_covariance(
 
         >>> covariance = fit.posterior.covariance().as_matrix()
         >>> bool(jnp.allclose(jnp.diag(covariance), fit.variance))
+        True
+
+        Conjugate gradients reach the same mode, with tolerances well below
+        the loop's:
+
+        >>> import gaussx
+        >>> conjugate = gaussx.CGSolver(rtol=1e-10, atol=1e-10)
+        >>> iterative = laplace_mode_covariance(
+        ...     prior, jnp.zeros(3), log_likelihood, solver=conjugate
+        ... )
+        >>> bool(jnp.allclose(iterative.mode, fit.mode, atol=1e-6))
+        True
+
+        BBMM gives a stochastic log-marginal from ``key``; the variances can
+        wait until they are needed:
+
+        >>> import jax.random as jr
+        >>> bbmm = gaussx.BBMMSolver(rtol=1e-10, atol=1e-10, num_probes=8)
+        >>> stochastic = laplace_mode_covariance(
+        ...     prior,
+        ...     jnp.zeros(3),
+        ...     log_likelihood,
+        ...     solver=bbmm,
+        ...     with_variance=False,
+        ...     key=jr.key(0),
+        ... )
+        >>> stochastic.variance is None, stochastic.log_marginal.shape
+        (True, ())
+        >>> later = stochastic.site_posterior.variance(method="exact")
+        >>> bool(jnp.allclose(later, fit.variance, atol=1e-6))
         True
 
         The mode is differentiable, by default through a matrix-free GMRES
@@ -719,32 +800,50 @@ def laplace_mode_covariance(
     References:
         Rasmussen, C. E. & Williams, C. K. I. (2006). Gaussian Processes for
         Machine Learning, section 3.4.
+
+        Gyger, T., Furrer, R. & Sigrist, F. (2026). JMLR 27(115), 1–60,
+        arXiv:2507.05064: preconditioned CG and stochastic Lanczos
+        quadrature in place of the dense steps.
     """
     _validate(max_iter, tol, damping)
     if not lx.is_positive_semidefinite(prior_cov):
         msg = "'prior_cov' must be tagged positive semidefinite, got tags without it"
         raise ValidationError(msg)
+    if solver is not None and not isinstance(solver, gx.AbstractSolverStrategy):
+        msg = (
+            "'solver' must be a gaussx solver strategy (for example "
+            f"gaussx.CGSolver()) or None, got {type(solver).__name__}"
+        )
+        raise ValidationError(msg)
     prior_mean = jnp.asarray(prior_mean)
     adjoint = _resolve_adjoint(adjoint, prior_mean.dtype)
 
     def fixed_point(latent: Array) -> Array:
-        return _covariance_update(
-            latent, prior_cov, prior_mean, log_likelihood, precision_floor
+        posterior = _site_posterior(
+            latent, prior_cov, prior_mean, log_likelihood, precision_floor, solver
         )
+        return posterior.mean
 
     # --- the loop, with gradients stopped ---
     # the loop runs with every input frozen, closed-over arrays included, so
     # gradients come only from the implicit fixed point below
     closed_likelihood = eqx.filter_closure_convert(log_likelihood, prior_mean)
     frozen_likelihood = _stop_gradient(closed_likelihood)
-    frozen_cov, frozen_mean = _stop_gradient((prior_cov, prior_mean))
+    frozen_cov, frozen_mean, frozen_solver = _stop_gradient(
+        (prior_cov, prior_mean, solver)
+    )
 
     def update(latent: Array, carry: None) -> tuple[Array, None]:
-        target = _covariance_update(
-            latent, frozen_cov, frozen_mean, frozen_likelihood, precision_floor
+        posterior = _site_posterior(
+            latent,
+            frozen_cov,
+            frozen_mean,
+            frozen_likelihood,
+            precision_floor,
+            frozen_solver,
         )
         # f ← (1 − α) f + α f_Newton
-        damped = (1.0 - damping) * latent + damping * target
+        damped = (1.0 - damping) * latent + damping * posterior.mean
         return damped, carry
 
     floored_tol = floored_tolerance(tol, prior_mean.dtype)
@@ -754,121 +853,53 @@ def laplace_mode_covariance(
     mode = _implicit_fixed_point(fixed_point, estimate, adjoint)
 
     # --- the Gaussian and the log-marginal at f̂ ---
-    information, precision = _sites(log_likelihood, mode, precision_floor)
-    regularised = _regularised(prior_cov, precision)
-    weights, mean = _newton_target(
-        prior_cov, prior_mean, regularised, information, precision
+    posterior = _site_posterior(
+        mode, prior_cov, prior_mean, log_likelihood, precision_floor, solver
     )
-    variance = _marginal_variance(prior_cov, regularised)
-    # f₁ − μ_f = K_XX w, so K_XX⁻¹ (f₁ − μ_f) = w exactly at f₁ = mean, with no
-    # solve against a badly conditioned K_XX; Ψ is stationary at the mode, so
-    # evaluating it exactly at f₁ costs a second-order error, where the
-    # identity K_XX⁻¹ (f̂ − μ_f) = g(f̂) costs a first-order one
-    residual = mean - prior_mean
-    # ½ (f₁ − μ_f)ᵀ K_XX⁻¹ (f₁ − μ_f) = ½ (f₁ − μ_f)ᵀ w
-    quadratic = 0.5 * einx.dot("state, state ->", residual, weights)
-    # log |I + Λ_site^½ K_XX Λ_site^½|, from the Cholesky of a matrix whose
-    # eigenvalues are at least one, rather than the difference of two large
-    # log-determinants
-    log_det = gx.logdet(_whitened_sites(prior_cov, precision))
-    site_log_densities = log_likelihood(mean)
-    # ∑ₙ log p(yₙ ∣ f₁ₙ)
-    log_density = einx.sum("state ->", site_log_densities)
-    # ∑ₙ log p(yₙ ∣ f₁ₙ) − ½ (f₁ − μ_f)ᵀ K_XX⁻¹ (f₁ − μ_f)
-    #   − ½ log |I + Λ_site^½ K_XX Λ_site^½|
-    log_marginal = log_density - quadratic - 0.5 * log_det
+    variance = None
+    if with_variance:
+        # "exact" never needs a key: N solves for an iterative solver, where
+        # "auto" would turn stochastic above N = 2048
+        variance = posterior.variance(method="exact")
+    log_marginal = None
+    if with_log_marginal:
+        # the objective at f₁ = μ_f∣y, where gaussx's identity
+        # K_XX⁻¹ (f₁ − μ_f) = w holds exactly; Ψ is stationary at the mode, so
+        # this costs a second-order error in the mode's, not a first-order one
+        site_log_densities = log_likelihood(posterior.mean)
+        # ∑ₙ log p(yₙ ∣ f₁ₙ)
+        log_density = einx.sum("state ->", site_log_densities)
+        log_marginal = gx.site_log_evidence(posterior, log_density, key=key)
     return CovarianceLaplaceResult(
         mode=mode,
-        site_information=information,
-        site_precision=precision,
-        mean=mean,
+        site_information=posterior.site_information,
+        site_precision=posterior.site_precision,
+        mean=posterior.mean,
         variance=variance,
         log_marginal=log_marginal,
         n_iter=n_iter,
         converged=converged,
         prior_cov=prior_cov,
+        site_posterior=posterior,
     )
 
 
-def _regularised(
-    prior_cov: lx.AbstractLinearOperator, precision: Float[Array, " state"]
-) -> lx.AbstractLinearOperator:
-    """K_XX + Λ_site⁻¹, tagged positive semidefinite."""
-    # Λ_site⁻¹
-    site_variance = lx.DiagonalLinearOperator(1.0 / precision)
-    # K_XX + Λ_site⁻¹
-    untagged = prior_cov + site_variance
-    return lx.TaggedLinearOperator(untagged, _PSD)
-
-
-def _whitened_sites(
-    prior_cov: lx.AbstractLinearOperator, precision: Float[Array, " state"]
-) -> lx.AbstractLinearOperator:
-    """B = I + Λ_site^½ K_XX Λ_site^½, tagged positive semidefinite."""
-    # Λ_site^½
-    root = lx.DiagonalLinearOperator(jnp.sqrt(precision))
-    identity = lx.IdentityLinearOperator(prior_cov.in_structure())
-    # I + Λ_site^½ K_XX Λ_site^½
-    untagged = identity + root @ prior_cov @ root
-    return lx.TaggedLinearOperator(untagged, _PSD)
-
-
-def _covariance_update(
+def _site_posterior(
     latent: Float[Array, " state"],
     prior_cov: lx.AbstractLinearOperator,
     prior_mean: Float[Array, " state"],
     log_likelihood: Callable[[Float[Array, " state"]], Float[Array, " state"]],
     precision_floor: float,
-) -> Float[Array, " state"]:
-    """One undamped update f ↦ μ_f + K_XX (K_XX + Λ_site⁻¹)⁻¹ (μ_site − μ_f)."""
-    information, precision = _sites(log_likelihood, latent, precision_floor)
-    regularised = _regularised(prior_cov, precision)
-    _, target = _newton_target(
-        prior_cov, prior_mean, regularised, information, precision
-    )
-    return target
+    solver: gx.AbstractSolverStrategy | None,
+) -> gx.SitePosterior:
+    """The Gaussian under the Newton sites at f, whose mean is f_Newton.
 
-
-def _newton_target(
-    prior_cov: lx.AbstractLinearOperator,
-    prior_mean: Float[Array, " state"],
-    regularised: lx.AbstractLinearOperator,
-    information: Float[Array, " state"],
-    precision: Float[Array, " state"],
-) -> tuple[Float[Array, " state"], Float[Array, " state"]]:
-    """w = (K_XX + Λ_site⁻¹)⁻¹ (μ_site − μ_f) and f₁ = μ_f + K_XX w."""
-    # μ_site = Λμ_site / Λ_site, the sites at f as a Gaussian pseudo-target
-    pseudo_target = information / precision
-    # (K_XX + Λ_site⁻¹)⁻¹ (μ_site − μ_f)
-    weights = gx.solve(regularised, pseudo_target - prior_mean)
-    # K_XX (K_XX + Λ_site⁻¹)⁻¹ (μ_site − μ_f)
-    shift = prior_cov.mv(weights)
-    # μ_f + K_XX (K_XX + Λ_site⁻¹)⁻¹ (μ_site − μ_f)
-    return weights, prior_mean + shift
-
-
-def _marginal_variance(
-    prior_cov: lx.AbstractLinearOperator, regularised: lx.AbstractLinearOperator
-) -> Float[Array, " state"]:
-    """diag(Σ_f∣y) = diag(K_XX) − diag(K_XX (K_XX + Λ_site⁻¹)⁻¹ K_XX).
-
-    One solve per site.
+    f_Newton = μ_f + K_XX (K_XX + Λ_site⁻¹)⁻¹ (μ_site − μ_f)
     """
-    structure = prior_cov.in_structure()
-    identity = jnp.eye(structure.shape[0], dtype=structure.dtype)
-
-    def column_term(basis: Array) -> Array:
-        # kₙ = K_XX eₙ, the n-th column
-        column = prior_cov.mv(basis)
-        # (K_XX + Λ_site⁻¹)⁻¹ kₙ
-        solved = gx.solve(regularised, column)
-        # kₙᵀ (K_XX + Λ_site⁻¹)⁻¹ kₙ
-        return einx.dot("state, state ->", column, solved)
-
-    # diag(K_XX (K_XX + Λ_site⁻¹)⁻¹ K_XX)
-    reduction = jax.vmap(column_term)(identity)
-    # diag(K_XX) − diag(K_XX (K_XX + Λ_site⁻¹)⁻¹ K_XX)
-    return gx.diag(prior_cov) - reduction
+    information, precision = _sites(log_likelihood, latent, precision_floor)
+    return gx.site_posterior(
+        prior_mean, prior_cov, information, precision, solver=solver
+    )
 
 
 def laplace_mode_sites(
