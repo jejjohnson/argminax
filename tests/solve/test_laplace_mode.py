@@ -593,19 +593,16 @@ def test_jvp_hessian_and_vmap_over_datasets() -> None:
     )
 
     hessian = jax.hessian(functional)(_PARAMS, labels)
-    # the Hessian against central differences of the gradient
-    step = 1e-5
-    columns = [
-        (
-            jax.grad(functional)(_PARAMS + step * direction, labels)
-            - jax.grad(functional)(_PARAMS - step * direction, labels)
-        )
-        / (2.0 * step)
-        for direction in jnp.eye(2)
-    ]
-    # row j is ∂ⱼ∇, the Hessian's j-th column; the Hessian is symmetric
-    finite_differences = jnp.stack(columns)
-    assert _relative(hessian, finite_differences) <= 1e-5
+    for index in range(_PARAMS.size):
+
+        def gradient_component(params, index=index):
+            return jax.grad(functional)(params, labels)[index]
+
+        # row i of the Hessian is ∇ of ∂ᵢ, checked against central differences
+        assert_grad_matches_fd(gradient_component, _PARAMS, eps=1e-5, rtol=1e-5)
+        # forward over reverse (jax.hessian) agrees with reverse over reverse
+        row = jax.grad(gradient_component)(_PARAMS)
+        assert _relative(hessian[index], row) <= 1e-8
 
     datasets = jnp.stack([labels, 1.0 - labels])
     batched = jax.jit(jax.vmap(jax.grad(functional), in_axes=(None, 0)))(
