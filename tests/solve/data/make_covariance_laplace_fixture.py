@@ -75,8 +75,10 @@ def _log_likelihood(name: str, targets: jax.Array):
 
     def poisson(latent):
         # log p(y ∣ f) = y f − exp f − log y!
-        return targets * latent - jnp.exp(latent) - jax.scipy.special.gammaln(
-            targets + 1.0
+        return (
+            targets * latent
+            - jnp.exp(latent)
+            - jax.scipy.special.gammaln(targets + 1.0)
         )
 
     return poisson

@@ -933,7 +933,7 @@ def test_iterative_solver_never_densifies(solver: str, monkeypatch) -> None:
     result = fit(params)
     assert bool(result.converged)
     assert bool(jnp.isfinite(result.log_marginal))
-    jaxpr = jax.make_jaxpr(fit)(params).jaxpr
+    jaxpr = jax.make_jaxpr(lambda params: fit(params).log_marginal)(params).jaxpr
     assert (size, size) not in _shapes_in(jaxpr)
     assert calls == []
 
@@ -1074,7 +1074,7 @@ def test_slow_20k() -> None:
 
     @jax.jit
     def fit():
-        return laplace_mode_covariance(
+        result = laplace_mode_covariance(
             prior,
             jnp.zeros(size),
             labels,
@@ -1084,10 +1084,12 @@ def test_slow_20k() -> None:
             with_variance=False,
             with_log_marginal=False,
         )
+        return result.mode, result.mean, result.converged, result.n_iter
 
-    result = fit()
+    mode, mean, converged, n_iter = fit()
     jax.effects_barrier()
-    assert bool(result.converged)
+    assert bool(converged)
     # at convergence the posterior mean under the sites at f̂ is f̂
-    assert float(jnp.max(jnp.abs(result.mean - result.mode))) <= 1e-6
-    assert len(products) > 0
+    assert float(jnp.max(jnp.abs(mean - mode))) <= 1e-6
+    # every CG step is one product; a dense solve would take none
+    assert len(products) >= int(n_iter)
