@@ -29,7 +29,6 @@ settings are yours to fill in:
 
 from __future__ import annotations
 
-import argparse
 import importlib
 import importlib.metadata
 import inspect
@@ -41,6 +40,9 @@ import types
 import typing
 from collections import defaultdict
 from pathlib import Path
+
+import cyclopts
+from loguru import logger
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -308,30 +310,39 @@ def stale(current: str, text: str) -> bool:
     return current.partition(UPSTREAM_MARKER)[0] != text.partition(UPSTREAM_MARKER)[0]
 
 
-def main() -> int:
-    """Rewrite the index, or with ``--check`` fail if it is stale."""
-    parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
-    parser.add_argument("--check", action="store_true", help="fail if stale")
-    args = parser.parse_args()
+app = cyclopts.App(help=(__doc__ or "").splitlines()[0], result_action="return_value")
+
+
+@app.default
+def main(*, check: bool = False) -> int:
+    """Rewrite the index, or with ``--check`` fail if it is stale.
+
+    Args:
+        check: Fail if the index is stale instead of rewriting it.
+
+    Returns:
+        ``0`` on success, ``1`` if names clash or the index is stale.
+    """
     text = render()
     status = 0
     _, clashes = collect()
     if clashes:
-        print("Names bound to different objects in two homes:")
-        print("\n".join(f"  {c}" for c in clashes))
-        print("Rename one, or add it to ALLOWED_SHARED_NAMES with a reason.")
+        logger.error("Names bound to different objects in two homes:")
+        for clash in clashes:
+            logger.error("  {}", clash)
+        logger.error("Rename one, or add it to ALLOWED_SHARED_NAMES with a reason.")
         status = 1
-    if args.check:
+    if check:
         current = INDEX.read_text(encoding="utf-8") if INDEX.exists() else ""
         if stale(current, text):
             rel = INDEX.relative_to(ROOT)
-            print(f"{rel} is stale; run `uv run poe capabilities`")
+            logger.error("{} is stale; run `uv run poe capabilities`", rel)
             status = 1
     else:
         INDEX.write_text(text, encoding="utf-8")
-        print(f"wrote {INDEX.relative_to(ROOT)}")
+        logger.info("wrote {}", INDEX.relative_to(ROOT))
     return status
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(app())

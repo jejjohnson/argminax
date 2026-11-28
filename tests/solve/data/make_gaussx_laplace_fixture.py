@@ -16,6 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+import cyclopts
 import gaussx as gx
 import jax
 import jax.numpy as jnp
@@ -36,7 +37,16 @@ from loguru import logger
 jax.config.update("jax_enable_x64", True)
 
 
-def main(path: str) -> None:
+app = cyclopts.App(help=(__doc__ or "").splitlines()[0])
+
+
+@app.default
+def main(path: Path) -> None:
+    """Write gaussx's `laplace_mode` results to an ``.npz`` file.
+
+    Args:
+        path: Where to write the fixture.
+    """
     out: dict[str, np.ndarray] = {}
     for name, (make_prior, make_likelihood, kwargs) in PRECISION_CASES.items():
         fit = gx.laplace_mode(make_prior(), make_likelihood(), **kwargs)
@@ -74,4 +84,4 @@ def main(path: str) -> None:
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    app()
