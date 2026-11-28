@@ -21,6 +21,10 @@ implicitly through ``adjoint=``, an ``optx.ImplicitAdjoint``. The default is
 ``argminax.adjoint.safe_implicit_adjoint(lx.GMRES(rtol=1e-8, atol=1e-8,
 restart=20, max_steps=50))``, which forms no N × N matrix and never raises;
 pass another ``ImplicitAdjoint`` to change the solver or its tolerances.
+`laplace_mode_covariance` also takes a gaussx solver strategy as ``solver=``
+for every solve against K_XX + Λ_site⁻¹; with an iterative one
+(``gaussx.CGSolver``, ``gaussx.BBMMSolver``) and a matrix-free K_XX, no N × N
+matrix is formed.
 """
 
 from __future__ import annotations
