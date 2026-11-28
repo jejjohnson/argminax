@@ -1088,3 +1088,32 @@ def test_slow_20k() -> None:
     assert float(jnp.max(jnp.abs(mean - mode))) <= 1e-6
     # every CG step is one product; a dense solve would take none
     assert len(products) >= int(n_iter)
+
+
+def test_failed_inner_solve_is_not_converged() -> None:
+    """A CG that stops early must not read as a converged loop.
+
+    With μ_f = 0, K_XX = diag(1, 3) and log p = −½ (f − 1)², the sites are
+    constant (Λ_site = 1, μ_site = 1), so one CG step returns the same wrong
+    target K_XX w = (1/3, 1) every iteration and ‖Δf‖_∞ is zero from the second
+    on; the mode is K_XX (K_XX + I)⁻¹ 1 = (1/2, 3/4).
+    """
+    prior = lx.TaggedLinearOperator(
+        lx.DiagonalLinearOperator(jnp.array([1.0, 3.0])), _PSD
+    )
+
+    def log_likelihood(latent):
+        # log p(y ∣ f) = −½ (f − 1)²
+        return -0.5 * (latent - 1.0) ** 2
+
+    one_step = gx.CGSolver(max_steps=1, throw=False)
+    fit = laplace_mode_covariance(prior, jnp.zeros(2), log_likelihood, solver=one_step)
+    assert not bool(fit.converged)
+    exact = laplace_mode_covariance(prior, jnp.zeros(2), log_likelihood)
+    assert bool(exact.converged)
+    assert jnp.allclose(exact.mode, jnp.array([0.5, 0.75]), rtol=1e-12)
+    # with enough steps the same solver converges to the mode
+    enough = gx.CGSolver(throw=False, **_TIGHT)
+    solved = laplace_mode_covariance(prior, jnp.zeros(2), log_likelihood, solver=enough)
+    assert bool(solved.converged)
+    assert jnp.allclose(solved.mode, exact.mode, rtol=1e-9)

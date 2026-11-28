@@ -656,10 +656,12 @@ def laplace_mode_covariance(
     **Inexact Newton.** An iterative solver leaves a residual in every step,
     and the test ‖Δf‖_∞ < tol cannot resolve below it: give the solver an
     rtol (and atol) at least ten times tighter than ``tol``, relative to the
-    scale of f. A strategy built with ``throw=True`` (gaussx's default)
-    raises when it runs out of steps, from inside the loop; inside a sampler
-    such as NUTS build it with ``throw=False``, and ``converged`` reports the
-    failure.
+    scale of f. Each solve of the loop, and the one at the mode, is checked
+    against the strategy's own tolerances (`gaussx.linear_solve_with_info`),
+    never raises, and makes ``converged`` false when it misses them. The
+    variances and the log-marginal solve through the strategy itself, which
+    raises at ``max_steps`` when built with ``throw=True`` (gaussx's
+    default): inside a sampler such as NUTS build it with ``throw=False``.
 
     Algorithm:
         1. From f = μ_f, iterate the damped update until ‖Δf‖_∞ < tol (tol
@@ -819,7 +821,7 @@ def laplace_mode_covariance(
     adjoint = _resolve_adjoint(adjoint, prior_mean.dtype)
 
     def fixed_point(latent: Array) -> Array:
-        posterior = _site_posterior(
+        posterior, _ = _site_posterior(
             latent, prior_cov, prior_mean, log_likelihood, precision_floor, solver
         )
         return posterior.mean
@@ -833,8 +835,8 @@ def laplace_mode_covariance(
         (prior_cov, prior_mean, solver)
     )
 
-    def update(latent: Array, carry: None) -> tuple[Array, None]:
-        posterior = _site_posterior(
+    def update(latent: Array, solved: Array) -> tuple[Array, Array]:
+        posterior, solved = _site_posterior(
             latent,
             frozen_cov,
             frozen_mean,
@@ -844,18 +846,22 @@ def laplace_mode_covariance(
         )
         # f ← (1 − α) f + α f_Newton
         damped = (1.0 - damping) * latent + damping * posterior.mean
-        return damped, carry
+        return damped, solved
 
     floored_tol = floored_tolerance(tol, prior_mean.dtype)
-    estimate, _, n_iter, converged = _site_loop(
-        update, (frozen_mean, None), max_iter, floored_tol
+    # the carry is whether the last step's solve met its tolerance: a solve
+    # that stops early repeats the same wrong step, which ‖Δf‖_∞ cannot see
+    start = (frozen_mean, jnp.asarray(True))
+    estimate, step_solved, n_iter, stepped = _site_loop(
+        update, start, max_iter, floored_tol
     )
     mode = _implicit_fixed_point(fixed_point, estimate, adjoint)
 
     # --- the Gaussian and the log-marginal at f̂ ---
-    posterior = _site_posterior(
+    posterior, mode_solved = _site_posterior(
         mode, prior_cov, prior_mean, log_likelihood, precision_floor, solver
     )
+    converged = stepped & step_solved & mode_solved
     variance = None
     if with_variance:
         # "exact" never needs a key: N solves for an iterative solver, where
@@ -891,15 +897,48 @@ def _site_posterior(
     log_likelihood: Callable[[Float[Array, " state"]], Float[Array, " state"]],
     precision_floor: float,
     solver: gx.AbstractSolverStrategy | None,
-) -> gx.SitePosterior:
-    """The Gaussian under the Newton sites at f, whose mean is f_Newton.
+) -> tuple[gx.SitePosterior, Bool[Array, ""]]:
+    """The Gaussian under the Newton sites at f, and whether its solve held.
 
-    f_Newton = μ_f + K_XX (K_XX + Λ_site⁻¹)⁻¹ (μ_site − μ_f)
+        w = A⁻¹ (μ_site − μ_f),   A = K_XX + Λ_site⁻¹
+        f_Newton = μ_f + K_XX w
+
+    A dense solver is `gaussx.site_posterior` itself, which is exact. An
+    iterative one solves through `gaussx.linear_solve_with_info`, which never
+    raises at ``max_steps`` and certifies the recomputed residual
+    maxₙ |b − A w|ₙ ≤ tol_abs + tol_rel maxₙ |bₙ| against the strategy's own
+    tolerances; `gaussx.site_posterior` returns no such verdict, so its
+    iterative branch is written out here.
     """
     information, precision = _sites(log_likelihood, latent, precision_floor)
-    return gx.site_posterior(
-        prior_mean, prior_cov, information, precision, solver=solver
+    if solver is None or isinstance(solver, gx.DenseSolver):
+        posterior = gx.site_posterior(
+            prior_mean, prior_cov, information, precision, solver=solver
+        )
+        return posterior, jnp.asarray(True)
+    # μ_site = Λμ_site / Λ_site
+    site_mean = information / precision
+    # Λ_site⁻¹
+    site_variance = lx.DiagonalLinearOperator(1.0 / precision)
+    # A = K_XX + Λ_site⁻¹
+    system = lx.TaggedLinearOperator(prior_cov + site_variance, _PSD)
+    # w = A⁻¹ (μ_site − μ_f)
+    weights, info = gx.linear_solve_with_info(
+        system, site_mean - prior_mean, solver=solver
     )
+    # K_XX w
+    shift = prior_cov.mv(weights)
+    posterior = gx.SitePosterior(
+        prior_mean=prior_mean,
+        prior_cov=prior_cov,
+        site_information=information,
+        site_precision=precision,
+        weights=weights,
+        # μ_f + K_XX w
+        mean=prior_mean + shift,
+        solver=solver,
+    )
+    return posterior, info.converged
 
 
 def laplace_mode_sites(
