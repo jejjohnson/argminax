@@ -60,6 +60,9 @@ test = [
     "hypothesis>=6.100",
     # argminax.blr builds optax transforms
     "optax>=0.2.4",
+    # jax.export deserialisation, to run pyrox's frozen site update in
+    # tests/solve/test_sites.py without importing pyrox
+    "flatbuffers>=24.3.25",
 ]
 lint = [
     "ruff>=0.15.22",

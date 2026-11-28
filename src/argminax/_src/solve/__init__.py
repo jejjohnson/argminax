@@ -13,6 +13,7 @@ from argminax._src.solve._laplace_mode import (
     laplace_mode_sites,
 )
 from argminax._src.solve._reparam import Reparametrised
+from argminax._src.solve._sites import SiteFixedPoint, site_fixed_point
 from argminax._src.solve._tolerant import TolerantLinearSolver
 
 
@@ -22,6 +23,7 @@ __all__ = [
     "GaussNewtonCG",
     "LaplaceModeResult",
     "Reparametrised",
+    "SiteFixedPoint",
     "SiteLaplaceResult",
     "TolerantLinearSolver",
     "dual_solve",
@@ -29,4 +31,5 @@ __all__ = [
     "laplace_mode",
     "laplace_mode_covariance",
     "laplace_mode_sites",
+    "site_fixed_point",
 ]
