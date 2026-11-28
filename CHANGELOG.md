@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.11](https://github.com/jejjohnson/argminax/compare/v0.0.10...v0.0.11) (2026-11-28)
+
+
+### Features
+
+* **solve:** laplace_mode_covariance takes a gaussx solver strategy and stays matrix-free with an iterative one ([#107](https://github.com/jejjohnson/argminax/issues/107)) ([00017ab](https://github.com/jejjohnson/argminax/commit/00017abf5f5eb3e617698add7045dd803964cfad)), closes [#98](https://github.com/jejjohnson/argminax/issues/98)
+
 ## [0.0.10](https://github.com/jejjohnson/argminax/compare/v0.0.9...v0.0.10) (2026-11-28)
 
 
