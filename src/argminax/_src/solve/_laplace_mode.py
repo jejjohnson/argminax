@@ -27,6 +27,7 @@ import optimistix as optx
 from jaxtyping import Array, ArrayLike, Bool, Float, Int
 
 from argminax._src.curvature import Laplace
+from argminax._src.solve._tolerance import floored_tolerance
 from argminax._src.solve._tolerant import TolerantLinearSolver
 from argminax.exceptions import ValidationError
 
@@ -47,13 +48,6 @@ _PSD = frozenset({lx.symmetric_tag, lx.positive_semidefinite_tag})
 # ---------------------------------------------------------------------------
 # Shared pieces
 # ---------------------------------------------------------------------------
-
-
-def _floored_tolerance(tol: float, dtype: Any) -> float:
-    """tol, floored at 64 machine epsilons: below that float32 never converges."""
-    # a host constant, so the floor also works under jit
-    epsilon = float(jnp.finfo(dtype).eps)
-    return max(tol, 64.0 * epsilon)
 
 
 def _validate(max_iter: int, tol: float, damping: float) -> None:
@@ -137,7 +131,7 @@ def _default_adjoint(dtype: Any) -> optx.ImplicitAdjoint:
     # so a module-level import would be circular
     from argminax._src.adjoint import safe_implicit_adjoint
 
-    tolerance = _floored_tolerance(1e-8, dtype)
+    tolerance = floored_tolerance(1e-8, dtype)
     solver = lx.GMRES(rtol=tolerance, atol=tolerance, restart=20, max_steps=50)
     return safe_implicit_adjoint(solver)
 
@@ -483,7 +477,7 @@ def laplace_mode(
     # --- the loop, with gradients stopped ---
     frozen_model = _stop_gradient(model)
     frozen_start = jax.lax.stop_gradient(start)
-    floored_tol = _floored_tolerance(tol, dtype)
+    floored_tol = floored_tolerance(tol, dtype)
     estimate, n_iter, converged = _damped_newton(
         frozen_model.newton, frozen_start, max_iter, floored_tol, damping
     )
@@ -753,7 +747,7 @@ def laplace_mode_covariance(
         damped = (1.0 - damping) * latent + damping * target
         return damped, carry
 
-    floored_tol = _floored_tolerance(tol, prior_mean.dtype)
+    floored_tol = floored_tolerance(tol, prior_mean.dtype)
     estimate, _, n_iter, converged = _site_loop(
         update, (frozen_mean, None), max_iter, floored_tol
     )
@@ -1023,7 +1017,7 @@ def laplace_mode_sites(
         start_mean * precision_floor,
         jnp.full_like(start_mean, precision_floor),
     )
-    floored_tol = _floored_tolerance(tol, prior_mean.dtype)
+    floored_tol = floored_tolerance(tol, prior_mean.dtype)
     estimate, _, n_iter, converged = _site_loop(
         update, (start_mean, start_sites), max_iter, floored_tol
     )

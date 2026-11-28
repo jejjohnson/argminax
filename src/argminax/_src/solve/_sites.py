@@ -18,6 +18,7 @@ import lineax as lx
 import optimistix as optx
 from jaxtyping import Array, Bool, Int, PyTree
 
+from argminax._src.solve._tolerance import floored_tolerance
 from argminax.exceptions import ValidationError
 
 
@@ -54,13 +55,10 @@ def _default_adjoint() -> optx.ImplicitAdjoint:
     return safe_implicit_adjoint(solver)
 
 
-def _floored_tolerance(tol: float, sites: PyTree[Array]) -> float:
-    """tol, floored at 64 machine epsilons of the sites' dtype."""
+def _sites_dtype(sites: PyTree[Array]) -> Any:
+    """The floating dtype of the sites' inexact leaves."""
     leaves = jtu.tree_leaves(eqx.filter(sites, eqx.is_inexact_array))
-    dtype = jnp.result_type(*leaves)
-    # a host constant, so the floor also works under jit
-    epsilon = float(jnp.finfo(dtype).eps)
-    return max(tol, 64.0 * epsilon)
+    return jnp.result_type(*leaves)
 
 
 def _max_norm(tree: PyTree[Array]) -> Array:
@@ -192,7 +190,7 @@ def site_fixed_point(
         raise ValidationError(msg)
 
     # --- the loop ---
-    floored_tol = _floored_tolerance(tol, sites)
+    floored_tol = floored_tolerance(tol, _sites_dtype(sites))
     # |Δsⱼ| < (tol / 10) (1 + |sⱼ|), per component
     # the norm in the default float dtype, the dtype optimistix starts its
     # relative error in: float32 sites under jax_enable_x64 otherwise give a
