@@ -7,6 +7,8 @@ solver that stops before it converges, as learned 4D-Var does. Each is an
 ``optx.least_squares``. `safe_implicit_adjoint` is ``optx.ImplicitAdjoint``
 for a fixed point or minimum differentiated inside NUTS or SVI, where a failed
 linear solve must become a value the sampler rejects rather than an exception.
+With GMRES it is the default adjoint of `argminax.solve.laplace_mode_covariance`
+and `argminax.solve.laplace_mode_sites`.
 
 | Name | What it differentiates |
 |---|---|

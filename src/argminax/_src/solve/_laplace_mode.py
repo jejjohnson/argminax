@@ -194,12 +194,12 @@ class _NewtonGuessSolver(lx.AbstractLinearSolver):
         scale = self.atol + self.rtol * jnp.abs(vector)
         accepted = _sup_norm(residual / scale) <= 1.0
 
-        def keep_guess(_: None) -> tuple[Array, lx.RESULTS]:
+        def keep_guess(operand: None) -> tuple[Array, lx.RESULTS]:
             return guess, lx.RESULTS.successful
 
-        def solve(_: None) -> tuple[Array, lx.RESULTS]:
+        def solve(operand: None) -> tuple[Array, lx.RESULTS]:
             started = {**options, "y0": guess}
-            solution, result, _ = self.inner.compute(inner_state, vector, started)
+            solution, result, _stats = self.inner.compute(inner_state, vector, started)
             return solution, result
 
         solution, result = jax.lax.cond(accepted, keep_guess, solve, None)
@@ -634,7 +634,8 @@ def laplace_mode_covariance(
     Algorithm:
         1. From f = μ_f, iterate the damped update until ‖Δf‖_∞ < tol (tol
            floored at 64 machine epsilons of the dtype) or ``max_iter``.
-        2. Make the mode implicit through its fixed point f̂ = μ_f∣y(f̂).
+        2. Make the mode implicit through its fixed point f̂ = μ_f∣y(f̂),
+           with the tangent solve of ``adjoint`` (matrix-free by default).
         3. At f̂: the sites, the posterior mean and marginal variances, and the
            Laplace log-marginal.
 
@@ -649,13 +650,28 @@ def laplace_mode_covariance(
         precision_floor: The floor on Λ_site; raise it (pyrox-gp's
             ``GaussNewtonInference`` uses 1e-3) for non-log-concave
             likelihoods.
+        adjoint: How the mode is differentiated, an ``optx.ImplicitAdjoint``
+            whose linear solver solves (I − J_T)ᵀ v = ∇_f̂ L, with J_T the
+            Jacobian of the fixed-point map, from products with J_T alone.
+            ``None`` is ``argminax.adjoint.safe_implicit_adjoint(lx.GMRES(
+            rtol=1e-8, atol=1e-8, restart=20, max_steps=50))``, tolerances
+            floored at 64 machine epsilons of the dtype, which forms no N × N
+            matrix and never raises (a solve that stops early keeps its last
+            iterate). J_T = 0 at an unfloored mode, so an iterative solver is
+            first offered the exact answer for that case and is called only
+            when it misses the solver's tolerance. Pass
+            ``optx.ImplicitAdjoint(lx.AutoLinearSolver(well_posed=True))``
+            for the dense LU used before, or a tighter GMRES for a hard
+            problem; an rtol far below the accuracy of the solves in the loop
+            only spends steps.
 
     Returns:
         The `CovarianceLaplaceResult`.
 
     Raises:
         ValidationError: If ``prior_cov`` is not tagged positive semidefinite,
-            or ``max_iter``, ``tol`` or ``damping`` is out of range.
+            ``max_iter``, ``tol`` or ``damping`` is out of range, or
+            ``adjoint`` is not an ``optx.ImplicitAdjoint``.
 
     Examples:
         Bernoulli labels on an independent prior:
@@ -678,6 +694,23 @@ def laplace_mode_covariance(
 
         >>> covariance = fit.posterior.covariance().as_matrix()
         >>> bool(jnp.allclose(jnp.diag(covariance), fit.variance))
+        True
+
+        The mode is differentiable, by default through a matrix-free GMRES
+        tangent solve; the dense LU gives the same gradient:
+
+        >>> import optimistix as optx
+        >>> def middle_mode(scale, adjoint=None):
+        ...     prior = lx.MatrixLinearOperator(
+        ...         scale * jnp.eye(3), lx.positive_semidefinite_tag
+        ...     )
+        ...     fit = laplace_mode_covariance(
+        ...         prior, jnp.zeros(3), log_likelihood, adjoint=adjoint
+        ...     )
+        ...     return fit.mode[1]
+        >>> dense = optx.ImplicitAdjoint(lx.AutoLinearSolver(well_posed=True))
+        >>> gradient = jax.grad(middle_mode)(2.0)
+        >>> bool(jnp.allclose(gradient, jax.grad(middle_mode)(2.0, dense)))
         True
 
         A prior covariance without the positive semidefinite tag is rejected:
@@ -877,7 +910,7 @@ def laplace_mode_sites(
            floored, and f from ``posterior_mean``, until ‖Δf‖_∞ < tol (floored
            at 64 machine epsilons) or ``max_iter``.
         3. Make the mode implicit through its fixed point
-           f̂ = μ_f∣y(sites(f̂)),
+           f̂ = μ_f∣y(sites(f̂)), with the tangent solve of ``adjoint``,
            and return the undamped sites at f̂.
 
     Args:
@@ -889,13 +922,28 @@ def laplace_mode_sites(
         tol: Absolute tolerance on ‖Δf‖_∞.
         damping: Step size α in (0, 1] on the naturals.
         precision_floor: The floor on Λ_site.
+        adjoint: How the mode is differentiated, an ``optx.ImplicitAdjoint``
+            whose linear solver solves (I − J_T)ᵀ v = ∇_f̂ L, with J_T the
+            Jacobian of the fixed-point map, from products with J_T alone.
+            ``None`` is ``argminax.adjoint.safe_implicit_adjoint(lx.GMRES(
+            rtol=1e-8, atol=1e-8, restart=20, max_steps=50))``, tolerances
+            floored at 64 machine epsilons of the dtype, which forms no N × N
+            matrix and never raises (a solve that stops early keeps its last
+            iterate). J_T = 0 at an unfloored mode, so an iterative solver is
+            first offered the exact answer for that case and is called only
+            when it misses the solver's tolerance. Pass
+            ``optx.ImplicitAdjoint(lx.AutoLinearSolver(well_posed=True))``
+            for the dense LU used before, or a tighter GMRES for a hard
+            problem; an rtol far below the accuracy of ``posterior_mean``
+            only spends steps.
 
     Returns:
         The `SiteLaplaceResult`: the mode and the sites at it, from which the
         caller's smoother gives the marginals and the log-marginal.
 
     Raises:
-        ValidationError: If ``max_iter``, ``tol`` or ``damping`` is out of range.
+        ValidationError: If ``max_iter``, ``tol`` or ``damping`` is out of range,
+            or ``adjoint`` is not an ``optx.ImplicitAdjoint``.
 
     Examples:
         With an independent unit prior the posterior mean has a closed form:
