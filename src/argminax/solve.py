@@ -14,6 +14,12 @@ Every solver here is an optimistix solver, so ``optx.minimise`` and
 | `laplace_mode_covariance` | the same for a GP with prior covariance K_XX |
 | `laplace_mode_sites` | the same given a posterior-mean map of sites (Markov GPs) |
 | `TolerantLinearSolver` | a lineax solver whose failed solves return values |
+
+`laplace_mode_covariance` and `laplace_mode_sites` differentiate their mode
+implicitly through ``adjoint=``, an ``optx.ImplicitAdjoint``. The default is
+``argminax.adjoint.safe_implicit_adjoint(lx.GMRES(rtol=1e-8, atol=1e-8,
+restart=20, max_steps=50))``, which forms no N × N matrix and never raises;
+pass another ``ImplicitAdjoint`` to change the solver or its tolerances.
 """
 
 from __future__ import annotations

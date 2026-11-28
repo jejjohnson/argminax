@@ -13,11 +13,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import einx
+import equinox as eqx
 import gaussx as gx
 import jax
 import jax.numpy as jnp
 import lineax as lx
 import numpy as np
+import optimistix as optx
 import pytest
 from _gaussx_problems import (
     FLOAT32_SIZE,
@@ -32,6 +35,8 @@ from _gaussx_problems import (
 from _harness import assert_grad_matches_fd
 
 from argminax import ValidationError
+from argminax._src.solve._laplace_mode import _default_adjoint
+from argminax.adjoint import safe_implicit_adjoint
 from argminax.curvature import Laplace
 from argminax.solve import (
     laplace_mode,
@@ -375,4 +380,324 @@ def test_covariance_form_needs_a_psd_prior() -> None:
     with pytest.raises(ValidationError, match="'prior_cov' must be tagged"):
         laplace_mode_covariance(
             lx.MatrixLinearOperator(jnp.eye(2)), jnp.zeros(2), _bernoulli(jnp.ones(2))
+        )
+
+
+# --- the matrix-free implicit gradient (#99) ---
+#
+# The case of the issue's table: Bernoulli labels at 150 points, a Matérn-3/2
+# prior, and the gradient of a random linear functional of the mode with
+# respect to the kernel variance and lengthscale. The dense reference is the
+# tangent solve argminax used before #99, a dense LU of the Jacobian.
+
+_GRADIENT_SIZE = 150
+_DENSE_LU = optx.ImplicitAdjoint(linear_solver=lx.AutoLinearSolver(well_posed=True))
+
+
+def _matern32_problem(size: int = _GRADIENT_SIZE, dtype=jnp.float64):
+    generator = np.random.default_rng(1)
+    inputs = jnp.asarray(np.sort(generator.uniform(-3.0, 3.0, size)), dtype)
+    labels = jnp.asarray(np.sin(2.0 * np.asarray(inputs)) > 0, dtype)
+    weights = jnp.asarray(generator.normal(size=size), dtype)
+    # |xᵢ − xⱼ|, one row per training point
+    distances = jnp.abs(einx.subtract("row, col -> row col", inputs, inputs))
+
+    def prior(params):
+        variance, lengthscale = params[0], params[1]
+        # k(r) = σ² (1 + √3 r / l) exp(−√3 r / l), plus jitter
+        scaled = jnp.sqrt(3.0) * distances / lengthscale
+        kernel = variance * (1.0 + scaled) * jnp.exp(-scaled)
+        jitter = 1e-6 * jnp.eye(size, dtype=dtype)
+        return lx.MatrixLinearOperator(kernel + jitter, _PSD)
+
+    return prior, labels, weights
+
+
+def _mode_functional(floor: float, adjoint=None, dtype=jnp.float64):
+    prior, labels, weights = _matern32_problem(dtype=dtype)
+
+    def functional(params):
+        fit = laplace_mode_covariance(
+            prior(params),
+            jnp.zeros(_GRADIENT_SIZE, dtype),
+            _bernoulli(labels),
+            max_iter=100,
+            tol=1e-12,
+            precision_floor=floor,
+            adjoint=adjoint,
+        )
+        # wᵀ f̂
+        return einx.dot("state, state ->", weights, fit.mode), fit
+
+    return functional
+
+
+_PARAMS = jnp.array([1.3, 0.8])
+
+
+def test_matrix_free_gradient_matches_dense() -> None:
+    functional = _mode_functional(1e-6)
+    _, fit = functional(_PARAMS)
+    assert bool(fit.converged)
+    # no site is floored: the Newton map is exact
+    assert bool(jnp.all(fit.site_precision > 1e-6))
+    gradient = jax.grad(lambda params: functional(params)[0])(_PARAMS)
+    dense = jax.grad(lambda params: _mode_functional(1e-6, _DENSE_LU)(params)[0])(
+        _PARAMS
+    )
+    assert _relative(gradient, dense) <= 1e-8
+    assert_grad_matches_fd(lambda params: functional(params)[0], _PARAMS)
+
+
+def test_gradient_with_floored_sites() -> None:
+    """A floor of 0.2 floors a large share of the sites; ∂μ_f∣y/∂f ≠ 0."""
+    functional = _mode_functional(0.2)
+    _, fit = functional(_PARAMS)
+    assert bool(fit.converged)
+    floored = float(jnp.mean(fit.site_precision == 0.2))
+    assert floored >= 0.2
+    gradient = jax.grad(lambda params: functional(params)[0])(_PARAMS)
+    dense = jax.grad(lambda params: _mode_functional(0.2, _DENSE_LU)(params)[0])(
+        _PARAMS
+    )
+    assert _relative(gradient, dense) <= 1e-8
+    assert_grad_matches_fd(lambda params: functional(params)[0], _PARAMS)
+
+
+class _CountingSolver(lx.AbstractLinearSolver):
+    """A lineax solver that counts, at run time, the products ``inner`` takes.
+
+    The count comes from a debug callback, which JAX drops when it transposes
+    a linear map, so the products are counted through ``jax.jvp``: the same
+    tangent solve, untransposed. ``rtol`` and ``atol`` are the inner solver's,
+    so the solver is still seen as iterative.
+    """
+
+    inner: lx.AbstractLinearSolver
+    counter: list = eqx.field(static=True)
+
+    @property
+    def rtol(self) -> float:
+        return self.inner.rtol
+
+    @property
+    def atol(self) -> float:
+        return self.inner.atol
+
+    def init(self, operator, options):
+        def counted(vector):
+            jax.debug.callback(lambda _: self.counter.append(1), vector)
+            return operator.mv(vector)
+
+        wrapped = lx.FunctionLinearOperator(counted, operator.in_structure())
+        return self.inner.init(wrapped, options)
+
+    def compute(self, state, vector, options):
+        return self.inner.compute(state, vector, options)
+
+    def transpose(self, state, options):
+        return self.inner.transpose(state, options)
+
+    def conj(self, state, options):
+        return self.inner.conj(state, options)
+
+    def assume_full_rank(self):
+        return self.inner.assume_full_rank()
+
+
+def _gmres_products(floor: float) -> int:
+    counter: list = []
+    gmres = lx.GMRES(rtol=1e-8, atol=1e-8, restart=20, max_steps=50)
+    adjoint = safe_implicit_adjoint(_CountingSolver(gmres, counter))
+    functional = _mode_functional(floor, adjoint)
+    tangent = jnp.array([1.0, -0.5])
+    _, derivative = jax.jvp(
+        lambda params: functional(params)[0], (_PARAMS,), (tangent,)
+    )
+    jax.effects_barrier()
+    assert bool(jnp.isfinite(derivative))
+    return len(counter)
+
+
+def test_gradient_products_at_the_mode() -> None:
+    # J_T = 0 at the unfloored mode: the one product that checks the guess
+    # v = −b finds it within tolerance, and GMRES is never called
+    assert _gmres_products(1e-6) == 0
+    # with floored sites J_T ≠ 0, the guess is rejected and GMRES runs from it
+    assert _gmres_products(0.2) > 0
+
+
+def test_default_adjoint_is_matrix_free_gmres() -> None:
+    adjoint = _default_adjoint(jnp.float64)
+    inner = adjoint.linear_solver.inner
+    assert isinstance(inner, lx.GMRES)
+    assert (inner.rtol, inner.atol, inner.restart, inner.max_steps) == (
+        1e-8,
+        1e-8,
+        20,
+        50,
+    )
+    # float32 cannot reach 1e-8: floored at 64 ε, as the loop's tolerance is
+    single = _default_adjoint(jnp.float32).linear_solver.inner
+    assert single.rtol == pytest.approx(64 * float(jnp.finfo(jnp.float32).eps))
+
+
+def test_nonconverged_gradient_does_not_raise() -> None:
+    prior, labels, weights = _matern32_problem()
+
+    def functional(params):
+        fit = laplace_mode_covariance(
+            prior(params),
+            jnp.zeros(_GRADIENT_SIZE),
+            _bernoulli(labels),
+            max_iter=1,
+            precision_floor=0.2,
+        )
+        return einx.dot("state, state ->", weights, fit.mode), fit
+
+    _, fit = functional(_PARAMS)
+    assert not bool(fit.converged)
+    gradient = jax.grad(lambda params: functional(params)[0])(_PARAMS)
+    # finite, or NaN for a sampler to reject; never an exception
+    assert bool(jnp.all(jnp.isfinite(gradient) | jnp.isnan(gradient)))
+
+
+def test_gradient_in_float32() -> None:
+    functional = _mode_functional(1e-6, dtype=jnp.float32)
+    params = _PARAMS.astype(jnp.float32)
+    gradient = jax.grad(lambda params: functional(params)[0])(params)
+    assert gradient.dtype == jnp.float32
+    double = jax.grad(lambda params: _mode_functional(1e-6)(params)[0])(_PARAMS)
+    # float32 rounding through 150 solves against a Matérn Gram matrix
+    assert _relative(gradient, double) <= 1e-3
+
+
+@pytest.mark.slow
+def test_jvp_hessian_and_vmap_over_datasets() -> None:
+    size = 30
+    prior, labels, weights = _matern32_problem(size)
+
+    def functional(params, labels):
+        fit = laplace_mode_covariance(
+            prior(params), jnp.zeros(size), _bernoulli(labels), max_iter=100, tol=1e-12
+        )
+        return einx.dot("state, state ->", weights, fit.mode)
+
+    tangent = jnp.array([1.0, -0.5])
+    _, forward = jax.jvp(
+        lambda params: functional(params, labels), (_PARAMS,), (tangent,)
+    )
+    reverse = jax.grad(functional)(_PARAMS, labels)
+    assert forward == pytest.approx(
+        float(einx.dot("param, param ->", reverse, tangent)), rel=1e-8
+    )
+
+    hessian = jax.hessian(functional)(_PARAMS, labels)
+    for index in range(_PARAMS.size):
+
+        def gradient_component(params, index=index):
+            return jax.grad(functional)(params, labels)[index]
+
+        # row i of the Hessian is ∇ of ∂ᵢ, checked against central differences
+        assert_grad_matches_fd(gradient_component, _PARAMS, eps=1e-5, rtol=1e-5)
+        # forward over reverse (jax.hessian) agrees with reverse over reverse
+        row = jax.grad(gradient_component)(_PARAMS)
+        assert _relative(hessian[index], row) <= 1e-8
+
+    datasets = jnp.stack([labels, 1.0 - labels])
+    batched = jax.jit(jax.vmap(jax.grad(functional), in_axes=(None, 0)))(
+        _PARAMS, datasets
+    )
+    looped = jnp.stack([jax.grad(functional)(_PARAMS, data) for data in datasets])
+    assert jnp.allclose(batched, looped, rtol=1e-10)
+
+
+def _shapes_in(jaxpr) -> set[tuple[int, ...]]:
+    """Every array shape in a jaxpr, its sub-jaxprs included."""
+    shapes = set()
+    for equation in jaxpr.eqns:
+        for variable in [*equation.invars, *equation.outvars]:
+            shape = getattr(variable.aval, "shape", None)
+            if shape is not None:
+                shapes.add(tuple(shape))
+        for value in equation.params.values():
+            for sub in value if isinstance(value, tuple | list) else [value]:
+                # a ClosedJaxpr holds its Jaxpr; a Jaxpr has equations
+                inner = getattr(sub, "jaxpr", sub)
+                if hasattr(inner, "eqns"):
+                    shapes |= _shapes_in(inner)
+    return shapes
+
+
+@pytest.mark.parametrize(("adjoint", "dense"), [(None, False), (_DENSE_LU, True)])
+def test_site_gradient_forms_no_n_by_n_array(adjoint, dense: bool) -> None:
+    """A matrix-free posterior-mean map keeps the gradient matrix-free.
+
+    The independent prior f ~ 𝒩(0, diag(k)) gives μ_f∣y = Λμ_site / (1/k + Λ_site)
+    elementwise; the dense LU materialises the N × N Jacobian of the fixed point,
+    GMRES does not.
+    """
+    size = 37
+    labels = jnp.asarray(np.arange(size) % 3 == 0, jnp.float64)
+
+    def functional(variance):
+        def posterior_mean(information, precision):
+            # μ_f∣y = Λμ_site / (1/k + Λ_site)
+            return information / (1.0 / variance + precision)
+
+        fit = laplace_mode_sites(
+            posterior_mean,
+            _bernoulli(labels),
+            jnp.zeros(size),
+            max_iter=50,
+            tol=1e-10,
+            adjoint=adjoint,
+        )
+        return jnp.sum(jnp.sin(fit.mode))
+
+    variance = jnp.full(size, 1.5)
+    jaxpr = jax.make_jaxpr(jax.grad(functional))(variance).jaxpr
+    assert ((size, size) in _shapes_in(jaxpr)) is dense
+    assert_grad_matches_fd(functional, variance)
+
+
+def test_site_gradient_matches_dense() -> None:
+    data = PYROX[64]
+    labels = _bernoulli(jnp.asarray(data["markov_y"]))
+    kernel = jnp.asarray(data["markov_K"])
+    size = kernel.shape[0]
+
+    def summary(scale, adjoint):
+        prior = lx.MatrixLinearOperator(scale[0] * kernel, _PSD)
+
+        def posterior_mean(information, precision):
+            regularised = lx.TaggedLinearOperator(
+                prior + lx.DiagonalLinearOperator(1.0 / precision), _PSD
+            )
+            return scale[0] * kernel @ gx.solve(regularised, information / precision)
+
+        fit = laplace_mode_sites(
+            posterior_mean,
+            labels,
+            jnp.zeros(size),
+            max_iter=60,
+            tol=1e-12,
+            precision_floor=0.2,
+            adjoint=adjoint,
+        )
+        return jnp.sum(jnp.sin(fit.mode))
+
+    scale = jnp.array([0.8])
+    gradient = jax.grad(summary)(scale, None)
+    dense = jax.grad(summary)(scale, _DENSE_LU)
+    assert _relative(gradient, dense) <= 1e-8
+
+
+def test_adjoint_is_validated() -> None:
+    with pytest.raises(ValidationError, match="'adjoint' must be an optimistix"):
+        laplace_mode_covariance(
+            lx.MatrixLinearOperator(jnp.eye(2), _PSD),
+            jnp.zeros(2),
+            _bernoulli(jnp.ones(2)),
+            adjoint=optx.RecursiveCheckpointAdjoint(),
         )

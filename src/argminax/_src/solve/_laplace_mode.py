@@ -23,9 +23,11 @@ import gaussx as gx
 import jax
 import jax.numpy as jnp
 import lineax as lx
+import optimistix as optx
 from jaxtyping import Array, ArrayLike, Bool, Float, Int
 
 from argminax._src.curvature import Laplace
+from argminax._src.solve._tolerant import TolerantLinearSolver
 from argminax.exceptions import ValidationError
 
 
@@ -124,19 +126,133 @@ def _start_at_estimate(_: Any, start: Array) -> Array:
     return start
 
 
+def _default_adjoint(dtype: Any) -> optx.ImplicitAdjoint:
+    """safe_implicit_adjoint(GMRES(rtol=1e-8, atol=1e-8, restart=20, max_steps=50)).
+
+    The tolerances are floored at 64 machine epsilons of the dtype, as the
+    loop's are: below that a float32 solve cannot converge and would spend its
+    whole budget on rounding error.
+    """
+    # imported here: argminax._src.adjoint imports argminax._src.solve._tolerant,
+    # so a module-level import would be circular
+    from argminax._src.adjoint import safe_implicit_adjoint
+
+    tolerance = _floored_tolerance(1e-8, dtype)
+    solver = lx.GMRES(rtol=tolerance, atol=tolerance, restart=20, max_steps=50)
+    return safe_implicit_adjoint(solver)
+
+
+def _resolve_adjoint(
+    adjoint: optx.ImplicitAdjoint | None, dtype: Any
+) -> optx.ImplicitAdjoint:
+    """The caller's implicit adjoint, or the matrix-free default."""
+    if adjoint is None:
+        return _default_adjoint(dtype)
+    if not isinstance(adjoint, optx.ImplicitAdjoint):
+        msg = (
+            "'adjoint' must be an optimistix ImplicitAdjoint (for example "
+            "argminax.adjoint.safe_implicit_adjoint(...)), "
+            f"got {type(adjoint).__name__}"
+        )
+        raise ValidationError(msg)
+    return adjoint
+
+
+class _NewtonGuessSolver(lx.AbstractLinearSolver):
+    """Solve (J_T − I) v = b by first trying v = −b, exact when J_T = 0.
+
+        r = b − (J_T − I)(−b) = J_T b
+        v = −b               if |rᵢ| ≤ atol + rtol |bᵢ| for every i
+        v = inner(b)         otherwise, started from −b
+
+    One product checks the guess; ``inner`` runs only when it is not within
+    the tolerance of ``inner`` itself. It is a lineax solver, so lineax keeps
+    treating the solve as linear in b when it transposes or differentiates it.
+
+    Attributes:
+        inner: The iterative solver for the system.
+        rtol: Its relative tolerance.
+        atol: Its absolute tolerance.
+    """
+
+    inner: lx.AbstractLinearSolver
+    rtol: float = eqx.field(static=True)
+    atol: float = eqx.field(static=True)
+
+    def init(self, operator: lx.AbstractLinearOperator, options: dict[str, Any]) -> Any:
+        return operator, self.inner.init(operator, options)
+
+    def compute(
+        self, state: Any, vector: Array, options: dict[str, Any]
+    ) -> tuple[Array, lx.RESULTS, dict[str, Any]]:
+        operator, inner_state = state
+        # v = −b, exact when J_T = 0
+        guess = -vector
+        # r = b − (J_T − I)(−b) = J_T b
+        residual = vector - operator.mv(guess)
+        # atol + rtol |bᵢ|, the inner solver's own scale
+        scale = self.atol + self.rtol * jnp.abs(vector)
+        accepted = _sup_norm(residual / scale) <= 1.0
+
+        def keep_guess(operand: None) -> tuple[Array, lx.RESULTS]:
+            return guess, lx.RESULTS.successful
+
+        def solve(operand: None) -> tuple[Array, lx.RESULTS]:
+            started = {**options, "y0": guess}
+            solution, result, _stats = self.inner.compute(inner_state, vector, started)
+            return solution, result
+
+        solution, result = jax.lax.cond(accepted, keep_guess, solve, None)
+        return solution, result, {}
+
+    def transpose(self, state: Any, options: dict[str, Any]) -> Any:
+        operator, inner_state = state
+        inner_transposed, inner_options = self.inner.transpose(inner_state, options)
+        return (operator.transpose(), inner_transposed), inner_options
+
+    def conj(self, state: Any, options: dict[str, Any]) -> Any:
+        operator, inner_state = state
+        inner_conjugated, inner_options = self.inner.conj(inner_state, options)
+        return (operator.conj(), inner_conjugated), inner_options
+
+    def assume_full_rank(self) -> bool:
+        return self.inner.assume_full_rank()
+
+
+def _tangent_solver(solver: lx.AbstractLinearSolver) -> lx.AbstractLinearSolver:
+    """The adjoint's solver, behind the guess v = −b when it is iterative.
+
+    An iterative lineax solver is recognised by its ``rtol`` and ``atol``
+    (through a `TolerantLinearSolver`); a direct solver is exact and is used
+    as it is.
+    """
+    inner = solver.inner if isinstance(solver, TolerantLinearSolver) else solver
+    rtol = getattr(inner, "rtol", None)
+    atol = getattr(inner, "atol", None)
+    if rtol is None or atol is None:
+        return solver
+    return _NewtonGuessSolver(solver, rtol, atol)
+
+
 def _implicit_fixed_point(
     update: Callable[[Float[Array, " state"]], Float[Array, " state"]],
     estimate: Float[Array, " state"],
+    adjoint: optx.ImplicitAdjoint,
 ) -> Float[Array, " state"]:
     """Attach implicit tangents to a fixed point f̂ = μ_f∣y(f̂).
 
-        ∂f̂/∂θ = (I − ∂μ_f∣y/∂f)⁻¹ ∂μ_f∣y/∂θ
+        ∂f̂/∂θ = (I − J_T)⁻¹ ∂μ_f∣y/∂θ,   J_T = ∂μ_f∣y/∂f
 
     μ_f∣y(f) is ``update``: the posterior mean under the sites at f, with θ
-    every array it closes over. The root is μ_f∣y(f) − f; its Jacobian is not
-    symmetric in general, so the tangent solve is a dense LU on the N × N
-    Jacobian (N products with it).
+    every array it closes over. The root is μ_f∣y(f) − f, whose Jacobian
+    J_T − I is not symmetric in general, so each tangent solve goes to the
+    adjoint's linear solver, given only products with the Jacobian (GMRES by
+    default). For an exact Newton map J_T = 0 at the mode, so an iterative
+    solver is first offered v = −b and runs only when that guess misses its
+    tolerance (`_NewtonGuessSolver`): floored sites make the map
+    quasi-Newton, with J_T small but not zero.
     """
+    solver = _tangent_solver(adjoint.linear_solver)
 
     def root(state: Float[Array, " state"]) -> Float[Array, " state"]:
         # μ_f∣y(f) − f
@@ -145,7 +261,6 @@ def _implicit_fixed_point(
     def tangent_solve(matvec: Callable, vector: Float[Array, " state"]) -> Array:
         structure = jax.eval_shape(lambda: vector)
         operator = lx.FunctionLinearOperator(matvec, structure)
-        solver = lx.AutoLinearSolver(well_posed=True)
         solution = lx.linear_solve(operator, vector, solver)
         return solution.value
 
@@ -500,6 +615,7 @@ def laplace_mode_covariance(
     tol: float = 1e-6,
     damping: float = 1.0,
     precision_floor: float = 1e-6,
+    adjoint: optx.ImplicitAdjoint | None = None,
 ) -> CovarianceLaplaceResult:
     """Laplace approximation of a GP with prior covariance K_XX, by damped Newton.
 
@@ -518,7 +634,8 @@ def laplace_mode_covariance(
     Algorithm:
         1. From f = μ_f, iterate the damped update until ‖Δf‖_∞ < tol (tol
            floored at 64 machine epsilons of the dtype) or ``max_iter``.
-        2. Make the mode implicit through its fixed point f̂ = μ_f∣y(f̂).
+        2. Make the mode implicit through its fixed point f̂ = μ_f∣y(f̂),
+           with the tangent solve of ``adjoint`` (matrix-free by default).
         3. At f̂: the sites, the posterior mean and marginal variances, and the
            Laplace log-marginal.
 
@@ -533,13 +650,28 @@ def laplace_mode_covariance(
         precision_floor: The floor on Λ_site; raise it (pyrox-gp's
             ``GaussNewtonInference`` uses 1e-3) for non-log-concave
             likelihoods.
+        adjoint: How the mode is differentiated, an ``optx.ImplicitAdjoint``
+            whose linear solver solves (I − J_T)ᵀ v = ∇_f̂ L, with J_T the
+            Jacobian of the fixed-point map, from products with J_T alone.
+            ``None`` is ``argminax.adjoint.safe_implicit_adjoint(lx.GMRES(
+            rtol=1e-8, atol=1e-8, restart=20, max_steps=50))``, tolerances
+            floored at 64 machine epsilons of the dtype, which forms no N × N
+            matrix and never raises (a solve that stops early keeps its last
+            iterate). J_T = 0 at an unfloored mode, so an iterative solver is
+            first offered the exact answer for that case and is called only
+            when it misses the solver's tolerance. Pass
+            ``optx.ImplicitAdjoint(lx.AutoLinearSolver(well_posed=True))``
+            for the dense LU used before, or a tighter GMRES for a hard
+            problem; an rtol far below the accuracy of the solves in the loop
+            only spends steps.
 
     Returns:
         The `CovarianceLaplaceResult`.
 
     Raises:
         ValidationError: If ``prior_cov`` is not tagged positive semidefinite,
-            or ``max_iter``, ``tol`` or ``damping`` is out of range.
+            ``max_iter``, ``tol`` or ``damping`` is out of range, or
+            ``adjoint`` is not an ``optx.ImplicitAdjoint``.
 
     Examples:
         Bernoulli labels on an independent prior:
@@ -564,6 +696,23 @@ def laplace_mode_covariance(
         >>> bool(jnp.allclose(jnp.diag(covariance), fit.variance))
         True
 
+        The mode is differentiable, by default through a matrix-free GMRES
+        tangent solve; the dense LU gives the same gradient:
+
+        >>> import optimistix as optx
+        >>> def middle_mode(scale, adjoint=None):
+        ...     prior = lx.MatrixLinearOperator(
+        ...         scale * jnp.eye(3), lx.positive_semidefinite_tag
+        ...     )
+        ...     fit = laplace_mode_covariance(
+        ...         prior, jnp.zeros(3), log_likelihood, adjoint=adjoint
+        ...     )
+        ...     return fit.mode[1]
+        >>> dense = optx.ImplicitAdjoint(lx.AutoLinearSolver(well_posed=True))
+        >>> gradient = jax.grad(middle_mode)(2.0)
+        >>> bool(jnp.allclose(gradient, jax.grad(middle_mode)(2.0, dense)))
+        True
+
         A prior covariance without the positive semidefinite tag is rejected:
 
         >>> untagged = lx.MatrixLinearOperator(jnp.eye(3))
@@ -582,6 +731,7 @@ def laplace_mode_covariance(
         msg = "'prior_cov' must be tagged positive semidefinite, got tags without it"
         raise ValidationError(msg)
     prior_mean = jnp.asarray(prior_mean)
+    adjoint = _resolve_adjoint(adjoint, prior_mean.dtype)
 
     def fixed_point(latent: Array) -> Array:
         return _covariance_update(
@@ -607,7 +757,7 @@ def laplace_mode_covariance(
     estimate, _, n_iter, converged = _site_loop(
         update, (frozen_mean, None), max_iter, floored_tol
     )
-    mode = _implicit_fixed_point(fixed_point, estimate)
+    mode = _implicit_fixed_point(fixed_point, estimate, adjoint)
 
     # --- the Gaussian and the log-marginal at f̂ ---
     information, precision = _sites(log_likelihood, mode, precision_floor)
@@ -738,6 +888,7 @@ def laplace_mode_sites(
     tol: float = 1e-6,
     damping: float = 1.0,
     precision_floor: float = 1e-6,
+    adjoint: optx.ImplicitAdjoint | None = None,
 ) -> SiteLaplaceResult:
     """Laplace approximation by damping the site naturals, given a posterior-mean map.
 
@@ -759,7 +910,7 @@ def laplace_mode_sites(
            floored, and f from ``posterior_mean``, until ‖Δf‖_∞ < tol (floored
            at 64 machine epsilons) or ``max_iter``.
         3. Make the mode implicit through its fixed point
-           f̂ = μ_f∣y(sites(f̂)),
+           f̂ = μ_f∣y(sites(f̂)), with the tangent solve of ``adjoint``,
            and return the undamped sites at f̂.
 
     Args:
@@ -771,13 +922,28 @@ def laplace_mode_sites(
         tol: Absolute tolerance on ‖Δf‖_∞.
         damping: Step size α in (0, 1] on the naturals.
         precision_floor: The floor on Λ_site.
+        adjoint: How the mode is differentiated, an ``optx.ImplicitAdjoint``
+            whose linear solver solves (I − J_T)ᵀ v = ∇_f̂ L, with J_T the
+            Jacobian of the fixed-point map, from products with J_T alone.
+            ``None`` is ``argminax.adjoint.safe_implicit_adjoint(lx.GMRES(
+            rtol=1e-8, atol=1e-8, restart=20, max_steps=50))``, tolerances
+            floored at 64 machine epsilons of the dtype, which forms no N × N
+            matrix and never raises (a solve that stops early keeps its last
+            iterate). J_T = 0 at an unfloored mode, so an iterative solver is
+            first offered the exact answer for that case and is called only
+            when it misses the solver's tolerance. Pass
+            ``optx.ImplicitAdjoint(lx.AutoLinearSolver(well_posed=True))``
+            for the dense LU used before, or a tighter GMRES for a hard
+            problem; an rtol far below the accuracy of ``posterior_mean``
+            only spends steps.
 
     Returns:
         The `SiteLaplaceResult`: the mode and the sites at it, from which the
         caller's smoother gives the marginals and the log-marginal.
 
     Raises:
-        ValidationError: If ``max_iter``, ``tol`` or ``damping`` is out of range.
+        ValidationError: If ``max_iter``, ``tol`` or ``damping`` is out of range,
+            or ``adjoint`` is not an ``optx.ImplicitAdjoint``.
 
     Examples:
         With an independent unit prior the posterior mean has a closed form:
@@ -813,6 +979,7 @@ def laplace_mode_sites(
     """
     _validate(max_iter, tol, damping)
     prior_mean = jnp.asarray(prior_mean)
+    adjoint = _resolve_adjoint(adjoint, prior_mean.dtype)
 
     def fixed_point(latent: Array) -> Array:
         information, precision = _sites(log_likelihood, latent, precision_floor)
@@ -860,7 +1027,7 @@ def laplace_mode_sites(
     estimate, _, n_iter, converged = _site_loop(
         update, (start_mean, start_sites), max_iter, floored_tol
     )
-    mode = _implicit_fixed_point(fixed_point, estimate)
+    mode = _implicit_fixed_point(fixed_point, estimate, adjoint)
 
     # --- the undamped sites at f̂ ---
     information, precision = _sites(log_likelihood, mode, precision_floor)
