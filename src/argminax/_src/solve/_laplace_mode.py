@@ -23,6 +23,7 @@ import gaussx as gx
 import jax
 import jax.numpy as jnp
 import lineax as lx
+import optimistix as optx
 from jaxtyping import Array, ArrayLike, Bool, Float, Int
 
 from argminax._src.curvature import Laplace
@@ -124,9 +125,42 @@ def _start_at_estimate(_: Any, start: Array) -> Array:
     return start
 
 
+def _default_adjoint(dtype: Any) -> optx.ImplicitAdjoint:
+    """safe_implicit_adjoint(GMRES(rtol=1e-8, atol=1e-8, restart=20, max_steps=50)).
+
+    The tolerances are floored at 64 machine epsilons of the dtype, as the
+    loop's are: below that a float32 solve cannot converge and would spend its
+    whole budget on rounding error.
+    """
+    # imported here: argminax._src.adjoint imports argminax._src.solve._tolerant,
+    # so a module-level import would be circular
+    from argminax._src.adjoint import safe_implicit_adjoint
+
+    tolerance = _floored_tolerance(1e-8, dtype)
+    solver = lx.GMRES(rtol=tolerance, atol=tolerance, restart=20, max_steps=50)
+    return safe_implicit_adjoint(solver)
+
+
+def _resolve_adjoint(
+    adjoint: optx.ImplicitAdjoint | None, dtype: Any
+) -> optx.ImplicitAdjoint:
+    """The caller's implicit adjoint, or the matrix-free default."""
+    if adjoint is None:
+        return _default_adjoint(dtype)
+    if not isinstance(adjoint, optx.ImplicitAdjoint):
+        msg = (
+            "'adjoint' must be an optimistix ImplicitAdjoint (for example "
+            "argminax.adjoint.safe_implicit_adjoint(...)), "
+            f"got {type(adjoint).__name__}"
+        )
+        raise ValidationError(msg)
+    return adjoint
+
+
 def _implicit_fixed_point(
     update: Callable[[Float[Array, " state"]], Float[Array, " state"]],
     estimate: Float[Array, " state"],
+    adjoint: optx.ImplicitAdjoint,
 ) -> Float[Array, " state"]:
     """Attach implicit tangents to a fixed point f̂ = μ_f∣y(f̂).
 
@@ -134,8 +168,11 @@ def _implicit_fixed_point(
 
     μ_f∣y(f) is ``update``: the posterior mean under the sites at f, with θ
     every array it closes over. The root is μ_f∣y(f) − f; its Jacobian is not
-    symmetric in general, so the tangent solve is a dense LU on the N × N
-    Jacobian (N products with it).
+    symmetric in general, so the tangent solve goes to the adjoint's linear
+    solver, given only products with the Jacobian (GMRES by default). For an
+    exact Newton map ∂μ_f∣y/∂f = 0 at the mode, so the system is −I and GMRES
+    stops after its first product; floored sites make it a quasi-Newton map,
+    whose Jacobian is small but not zero.
     """
 
     def root(state: Float[Array, " state"]) -> Float[Array, " state"]:
@@ -145,8 +182,7 @@ def _implicit_fixed_point(
     def tangent_solve(matvec: Callable, vector: Float[Array, " state"]) -> Array:
         structure = jax.eval_shape(lambda: vector)
         operator = lx.FunctionLinearOperator(matvec, structure)
-        solver = lx.AutoLinearSolver(well_posed=True)
-        solution = lx.linear_solve(operator, vector, solver)
+        solution = lx.linear_solve(operator, vector, adjoint.linear_solver)
         return solution.value
 
     frozen_estimate = jax.lax.stop_gradient(estimate)
@@ -500,6 +536,7 @@ def laplace_mode_covariance(
     tol: float = 1e-6,
     damping: float = 1.0,
     precision_floor: float = 1e-6,
+    adjoint: optx.ImplicitAdjoint | None = None,
 ) -> CovarianceLaplaceResult:
     """Laplace approximation of a GP with prior covariance K_XX, by damped Newton.
 
@@ -582,6 +619,7 @@ def laplace_mode_covariance(
         msg = "'prior_cov' must be tagged positive semidefinite, got tags without it"
         raise ValidationError(msg)
     prior_mean = jnp.asarray(prior_mean)
+    adjoint = _resolve_adjoint(adjoint, prior_mean.dtype)
 
     def fixed_point(latent: Array) -> Array:
         return _covariance_update(
@@ -607,7 +645,7 @@ def laplace_mode_covariance(
     estimate, _, n_iter, converged = _site_loop(
         update, (frozen_mean, None), max_iter, floored_tol
     )
-    mode = _implicit_fixed_point(fixed_point, estimate)
+    mode = _implicit_fixed_point(fixed_point, estimate, adjoint)
 
     # --- the Gaussian and the log-marginal at f̂ ---
     information, precision = _sites(log_likelihood, mode, precision_floor)
@@ -738,6 +776,7 @@ def laplace_mode_sites(
     tol: float = 1e-6,
     damping: float = 1.0,
     precision_floor: float = 1e-6,
+    adjoint: optx.ImplicitAdjoint | None = None,
 ) -> SiteLaplaceResult:
     """Laplace approximation by damping the site naturals, given a posterior-mean map.
 
@@ -813,6 +852,7 @@ def laplace_mode_sites(
     """
     _validate(max_iter, tol, damping)
     prior_mean = jnp.asarray(prior_mean)
+    adjoint = _resolve_adjoint(adjoint, prior_mean.dtype)
 
     def fixed_point(latent: Array) -> Array:
         information, precision = _sites(log_likelihood, latent, precision_floor)
@@ -860,7 +900,7 @@ def laplace_mode_sites(
     estimate, _, n_iter, converged = _site_loop(
         update, (start_mean, start_sites), max_iter, floored_tol
     )
-    mode = _implicit_fixed_point(fixed_point, estimate)
+    mode = _implicit_fixed_point(fixed_point, estimate, adjoint)
 
     # --- the undamped sites at f̂ ---
     information, precision = _sites(log_likelihood, mode, precision_floor)
