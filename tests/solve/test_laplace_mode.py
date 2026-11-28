@@ -715,13 +715,16 @@ COVARIANCE = np.load(DATA / "covariance_laplace.npz")
 _TIGHT = {"rtol": 1e-11, "atol": 1e-11}
 
 
-def _matern32_gram(inputs: np.ndarray) -> np.ndarray:
-    """The fixture's Gram matrix, with the NumPy code of its script."""
+def _matern32_gram(
+    inputs: np.ndarray, variance: float = 1.5, lengthscale: float = 0.9
+) -> np.ndarray:
+    """The fixture's Gram matrix (by default), with the NumPy code of its script."""
     # |xᵢ − xⱼ|
     distances = np.abs(einx.subtract("row, col -> row col", inputs, inputs))
-    # k(r) = σ² (1 + √3 r / l) exp(−√3 r / l), σ² = 1.5, l = 0.9, plus jitter
-    scaled = np.sqrt(3.0) * distances / 0.9
-    return 1.5 * (1.0 + scaled) * np.exp(-scaled) + 1e-6 * np.eye(inputs.size)
+    # k(r) = σ² (1 + √3 r / l) exp(−√3 r / l), plus jitter
+    scaled = np.sqrt(3.0) * distances / lengthscale
+    kernel = variance * (1.0 + scaled) * np.exp(-scaled)
+    return kernel + 1e-6 * np.eye(inputs.size)
 
 
 def _poisson(counts):
@@ -888,12 +891,8 @@ def _grid_labels(size: int, spacing: float, dtype=jnp.float64):
 
 
 def test_toeplitz_prior_is_the_dense_gram_matrix() -> None:
-    params = jnp.array([1.3, 0.8])
-    prior = _toeplitz_prior(params, 23, 0.25)
-    inputs = 0.25 * np.arange(23)
-    distances = np.abs(einx.subtract("row, col -> row col", inputs, inputs))
-    scaled = np.sqrt(3.0) * distances / 0.8
-    dense = 1.3 * (1.0 + scaled) * np.exp(-scaled) + 1e-6 * np.eye(23)
+    prior = _toeplitz_prior(jnp.array([1.3, 0.8]), 23, 0.25)
+    dense = _matern32_gram(0.25 * np.arange(23), variance=1.3, lengthscale=0.8)
     vector = jnp.asarray(np.random.default_rng(0).normal(size=23))
     assert jnp.allclose(prior.mv(vector), dense @ vector, rtol=1e-12)
 
@@ -977,35 +976,31 @@ def test_covariance_gradient_forms_no_n_by_n_array(solver, dense: bool) -> None:
 def test_iterative_log_marginal_gradient_matches_dense() -> None:
     """The evidence through CG with an exact log-determinant has the dense
     gradient, and both match central differences."""
-    size, spacing = _MATRIX_FREE_SIZE, 0.3
-    labels = _bernoulli(_grid_labels(size, spacing))
+    prior, labels, _ = _matern32_problem()
     iterative = gx.compose_solver(
         gx.CGSolver(rtol=1e-12, atol=1e-12), logdet=gx.DenseLogdet()
     )
 
-    def log_marginal(params, solver):
-        inputs = spacing * jnp.arange(size, dtype=jnp.float64)
-        distances = jnp.abs(einx.subtract("row, col -> row col", inputs, inputs))
-        scaled = jnp.sqrt(3.0) * distances / params[1]
-        kernel = params[0] * (1.0 + scaled) * jnp.exp(-scaled)
-        prior = lx.MatrixLinearOperator(kernel + 1e-6 * jnp.eye(size), _PSD)
-        fit = laplace_mode_covariance(
-            prior,
-            jnp.zeros(size),
-            labels,
-            max_iter=50,
+    def fit(params, solver):
+        return laplace_mode_covariance(
+            prior(params),
+            jnp.zeros(_GRADIENT_SIZE),
+            _bernoulli(labels),
+            max_iter=100,
             tol=1e-12,
             solver=solver,
             with_variance=False,
         )
-        return fit.log_marginal
 
-    params = jnp.array([1.3, 0.8])
-    gradient = jax.grad(log_marginal)(params, iterative)
-    dense = jax.grad(log_marginal)(params, None)
+    def log_marginal(params, solver):
+        return fit(params, solver).log_marginal
+
+    assert bool(fit(_PARAMS, iterative).converged)
+    gradient = jax.grad(log_marginal)(_PARAMS, iterative)
+    dense = jax.grad(log_marginal)(_PARAMS, None)
     assert _relative(gradient, dense) <= 1e-7
     assert_grad_matches_fd(
-        lambda params: log_marginal(params, iterative), params, eps=1e-5, rtol=1e-6
+        lambda params: log_marginal(params, iterative), _PARAMS, eps=1e-5, rtol=1e-6
     )
 
 
