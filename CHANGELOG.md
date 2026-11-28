@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.0.10](https://github.com/jejjohnson/argminax/compare/v0.0.9...v0.0.10) (2026-11-28)
+
+
+### Features
+
+* **solve:** site_fixed_point, the differentiable loop over Gaussian sites ([#106](https://github.com/jejjohnson/argminax/issues/106)) ([934ff1f](https://github.com/jejjohnson/argminax/commit/934ff1f18aeaef14f71ba7048cfb650f3d65efbc)), closes [#100](https://github.com/jejjohnson/argminax/issues/100)
+* **solve:** the implicit gradient of laplace_mode_covariance and laplace_mode_sites is matrix-free ([#105](https://github.com/jejjohnson/argminax/issues/105)) ([cb0a895](https://github.com/jejjohnson/argminax/commit/cb0a895944ef66b03b96c25b187f4974ecfed870)), closes [#99](https://github.com/jejjohnson/argminax/issues/99)
+
+
+### Bug Fixes
+
+* **solve:** evaluate the laplace_mode_covariance objective exactly at the newton target from the mode ([#95](https://github.com/jejjohnson/argminax/issues/95)) ([3a42cc7](https://github.com/jejjohnson/argminax/commit/3a42cc77ef0898997104e43a0c0f7a515ca5d164)), closes [#94](https://github.com/jejjohnson/argminax/issues/94)
+
 ## [0.0.9](https://github.com/jejjohnson/argminax/compare/v0.0.8...v0.0.9) (2026-11-21)
 
 
