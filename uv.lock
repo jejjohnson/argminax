@@ -84,7 +84,7 @@ typecheck = [
 requires-dist = [
     { name = "einx", specifier = ">=0.4.3" },
     { name = "equinox", specifier = ">=0.13.8" },
-    { name = "gaussx", git = "https://github.com/jejjohnson/gaussx?rev=v0.8.2" },
+    { name = "gaussx", git = "https://github.com/jejjohnson/gaussx?rev=v0.8.3" },
     { name = "jax", specifier = ">=0.10" },
     { name = "jaxlib", specifier = ">=0.10" },
     { name = "jaxtyping", specifier = ">=0.3" },
@@ -623,8 +623,8 @@ wheels = [
 
 [[package]]
 name = "gaussx"
-version = "0.8.2"
-source = { git = "https://github.com/jejjohnson/gaussx?rev=v0.8.2#46398fa3676d1fa6f51c38c0b58e9516ddffb3f6" }
+version = "0.8.3"
+source = { git = "https://github.com/jejjohnson/gaussx?rev=v0.8.3#a807dbb0179bd00617628a5f92ce75e8b6503022" }
 dependencies = [
     { name = "einx" },
     { name = "equinox" },

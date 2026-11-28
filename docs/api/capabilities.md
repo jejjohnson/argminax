@@ -168,7 +168,7 @@ current).
 
 <!-- upstream -->
 
-Listed at jax 0.12.0.1, equinox 0.13.8, lineax 0.1.1, optimistix 0.1.0, gaussx 0.8.2.
+Listed at jax 0.12.0.1, equinox 0.13.8, lineax 0.1.1, optimistix 0.1.0, gaussx 0.8.3.
 
 ## Upstream: `jax`
 
@@ -523,6 +523,7 @@ structured operators, solves, log-determinants and one Newton or Gauss–Newton 
 | `DenseFallbackWarning` | class | Warning emitted when a structured primitive materialises an operator. |
 | `DenseLogdet` | class | Exact log-determinant by gaussx's structural dispatch. |
 | `DenseSolver` | class | Exact solver strategy through gaussx structural dispatch. |
+| `DiagonalSplit` | class | A system A = base + diag(diagonal), read back into its two parts. |
 | `DiagonalizedOperator` | class | Linear operator A = W⁻¹ diag(γ) W given by a transform pair. |
 | `EigenDecomposition` | class | Precomputed eigendecomposition A = V diag(γ) V⁻¹ of a square matrix. |
 | `EmissionModel` | class | Linear observation (emission) model with a dense observation operator H. |
@@ -584,6 +585,7 @@ structured operators, solves, log-determinants and one Newton or Gauss–Newton 
 | `SLQLogdet` | class | Stochastic log-determinant by stochastic Lanczos quadrature (SLQ). |
 | `SLRResult` | class | Linear-Gaussian surrogate produced by statistical linear regression. |
 | `SRHTSketch` | class | Subsampled randomized Hadamard transform sketch. |
+| `SitePosterior` | class | 𝒩(μ_f\|y, Σ_f\|y) for a covariance-form prior and diagonal sites. |
 | `SketchAndPrecondLSMR` | class | Sketch-and-precondition LSMR for tall least squares (Rokhlin & Tygert, 2008). |
 | `SoftmaxLikelihood` | class | Softmax (categorical) likelihood for multi-class classification. |
 | `SolveInfo` | class | How a solve ended, from `linear_solve_with_info`. |
@@ -624,6 +626,7 @@ structured operators, solves, log-determinants and one Newton or Gauss–Newton 
 | `circulant_from_symbol` | function | (Block-)circulant operator C = DFT⁻¹ diag(γ) DFT from its symbol γ. |
 | `collapsed_elbo` | function | Collapsed ELBO (Titsias bound) for sparse GP regression. |
 | `column_id` | function | Randomized column interpolative decomposition (Voronin & Martinsson, 2017). |
+| `compose_solver` | function | One strategy from a solver, a preconditioner and a log-determinant. |
 | `compute_psi_statistics` | function | Compute Ψ statistics, dispatching to analytical or numerical. |
 | `conditional` | function | Conditional p(x_A ∣ x_B = b) of a joint Gaussian 𝒩(μ, Σ) from observed entries. |
 | `conditional_interpolate` | function | Two-filter fusion at t from a filtered state and a backward message. |
@@ -808,8 +811,11 @@ structured operators, solves, log-determinants and one Newton or Gauss–Newton 
 | `selected_inverse` | function | The band of Σ = Λ⁻¹ for a symmetric positive-definite `BlockTriDiag`. |
 | `sigma_point_kalman_update` | function | One moment-matched update from evaluations the caller already has. |
 | `sigma_points` | function | Scaled unscented sigma points and weights, 2 D_x + 1 of them. |
+| `site_evidence_correction` | function | The correction from the pseudo-observation marginal to the site evidence. |
+| `site_log_evidence` | function | log Z of a Gaussian-site posterior, from its system A = K_XX + diag(d). |
 | `site_mean_var_from_natural` | function | Mean and variance of a site from its natural parameters. |
 | `site_natural_from_tilted` | function | Site natural parameters that turn the cavity into the tilted moments. |
+| `site_posterior` | function | The Gaussian posterior of diagonal sites under a covariance-form prior. |
 | `sites_to_precision` | function | Block-diagonal precision of the sites, as a `BlockTriDiag`. |
 | `sketch_and_solve` | function | Approximate least squares from a sketch. |
 | `soar_taper` | function | Second-order auto-regressive (SOAR) taper ρ(r) = (1 + \|r\| / L) exp(−\|r\| / L). |
@@ -824,6 +830,7 @@ structured operators, solves, log-determinants and one Newton or Gauss–Newton 
 | `spde_precision_grid` | function | SPDE precision on a regular grid: a function of a Kronecker sum. |
 | `spingp_log_likelihood` | function | Log marginal likelihood log p(y_1:T) of a zero-mean SpInGP prior. |
 | `spingp_posterior` | function | Posterior mean μ_x\|y and precision Λ_x\|y of x_1:T under SpInGP. |
+| `split_diagonal` | function | Read A = K + diag(d) back into its kernel part K and its diagonal d. |
 | `sqrt` | function | Principal matrix square root A^½ with structural dispatch, lazy where possible. |
 | `sqrt_inv_matmul` | function | Inverse square root times a matrix, A^−½ B, by contour quadrature. |
 | `sqrt_matmul` | function | Square root times a matrix, A^½ B, by contour quadrature. |

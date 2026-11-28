@@ -32,7 +32,7 @@ from _gaussx_problems import (
     gaussian_prior,
     intrinsic_prior,
 )
-from _harness import assert_grad_matches_fd
+from _harness import assert_grad_matches_fd, assert_within_stderr
 
 from argminax import ValidationError
 from argminax._src.solve._laplace_mode import _default_adjoint
@@ -701,3 +701,419 @@ def test_adjoint_is_validated() -> None:
             _bernoulli(jnp.ones(2)),
             adjoint=optx.RecursiveCheckpointAdjoint(),
         )
+
+
+# --- a gaussx solver strategy for the covariance form (#98) ---
+#
+# The dense fits are frozen from the code before #98 (``covariance_laplace.npz``,
+# ``README_covariance_laplace.md``): a Bernoulli and a Poisson problem at
+# N = 200 on a Matérn-3/2 prior. The matrix-free prior is the same kernel on a
+# regular grid, a Toeplitz matrix applied by FFT, which never holds an N × N
+# array.
+
+COVARIANCE = np.load(DATA / "covariance_laplace.npz")
+_TIGHT = {"rtol": 1e-11, "atol": 1e-11}
+
+
+def _matern32_gram(
+    inputs: np.ndarray, variance: float = 1.5, lengthscale: float = 0.9
+) -> np.ndarray:
+    """The fixture's Gram matrix (by default), with the NumPy code of its script."""
+    # |xᵢ − xⱼ|
+    distances = np.abs(einx.subtract("row, col -> row col", inputs, inputs))
+    # k(r) = σ² (1 + √3 r / l) exp(−√3 r / l), plus jitter
+    scaled = np.sqrt(3.0) * distances / lengthscale
+    kernel = variance * (1.0 + scaled) * np.exp(-scaled)
+    return kernel + 1e-6 * np.eye(inputs.size)
+
+
+def _poisson(counts):
+    def log_likelihood(latent):
+        # log p(y ∣ f) = y f − exp f − log y!
+        log_factorial = jax.scipy.special.gammaln(counts + 1.0)
+        return counts * latent - jnp.exp(latent) - log_factorial
+
+    return log_likelihood
+
+
+def _fixture_problem(name: str):
+    kernel = jnp.asarray(_matern32_gram(COVARIANCE["inputs"]))
+    targets = jnp.asarray(COVARIANCE[f"{name}_y"])
+    log_likelihood = _bernoulli(targets) if name == "bernoulli" else _poisson(targets)
+    prior = lx.MatrixLinearOperator(kernel, _PSD)
+    return prior, jnp.asarray(COVARIANCE[f"{name}_mean"]), log_likelihood
+
+
+def _solver(name: str) -> gx.AbstractSolverStrategy:
+    if name == "cg":
+        return gx.CGSolver(**_TIGHT)
+    if name == "preconditioned_cg":
+        # per-point shifts d = 1/λ read from A = K_XX + diag(d) (gaussx#878)
+        preconditioner = gx.PartialCholeskyPreconditioner(rank=50, shift=None)
+        return gx.CGSolver(preconditioner=preconditioner, **_TIGHT)
+    return gx.BBMMSolver(**_TIGHT)
+
+
+_SOLVERS = ["cg", "preconditioned_cg", "bbmm"]
+
+
+@pytest.mark.parametrize("name", ["bernoulli", "poisson"])
+def test_default_matches_frozen_fixtures(name: str) -> None:
+    fit = laplace_mode_covariance(*_fixture_problem(name), max_iter=50, tol=1e-10)
+    assert bool(fit.converged)
+    assert int(fit.n_iter) == int(COVARIANCE[f"{name}_n_iter"])
+    for ours, field in [
+        (fit.mode, "mode"),
+        (fit.mean, "mean_at_mode"),
+        (fit.variance, "variance"),
+        (fit.site_information, "nat1"),
+        (fit.site_precision, "nat2"),
+    ]:
+        assert _relative(ours, COVARIANCE[f"{name}_{field}"]) <= 1e-10, field
+    assert fit.log_marginal == pytest.approx(
+        float(COVARIANCE[f"{name}_log_marginal"]), rel=1e-10
+    )
+
+
+@pytest.mark.parametrize("solver", _SOLVERS)
+@pytest.mark.parametrize("name", ["bernoulli", "poisson"])
+def test_solvers_agree_with_dense(name: str, solver: str) -> None:
+    fit = laplace_mode_covariance(
+        *_fixture_problem(name),
+        max_iter=50,
+        tol=1e-10,
+        solver=_solver(solver),
+        key=jax.random.key(0),
+    )
+    assert bool(fit.converged)
+    # each CG solve stops at a relative residual of 1e-11
+    assert _relative(fit.mode, COVARIANCE[f"{name}_mode"]) <= 1e-5
+    assert _relative(fit.variance, COVARIANCE[f"{name}_variance"]) <= 1e-5
+    assert bool(jnp.isfinite(fit.log_marginal))
+
+
+def test_exact_log_determinant_gives_the_standard_evidence() -> None:
+    # CG for the solves, a dense log-determinant: gaussx's standard form
+    solver = gx.compose_solver(gx.CGSolver(**_TIGHT), logdet=gx.DenseLogdet())
+    fit = laplace_mode_covariance(
+        *_fixture_problem("poisson"), max_iter=50, tol=1e-10, solver=solver
+    )
+    assert bool(fit.converged)
+    assert fit.log_marginal == pytest.approx(
+        float(COVARIANCE["poisson_log_marginal"]), rel=1e-8
+    )
+
+
+def test_stochastic_evidence_is_unbiased() -> None:
+    """BBMM gives the pseudo-observation form, a stochastic estimate whose mean
+    over keys is the dense evidence (the bound is its own standard error)."""
+    prior, prior_mean, log_likelihood = _fixture_problem("bernoulli")
+    solver = gx.BBMMSolver(num_probes=16, **_TIGHT)
+    fit = laplace_mode_covariance(
+        prior, prior_mean, log_likelihood, max_iter=50, tol=1e-10, solver=solver
+    )
+    assert bool(fit.converged)
+    site_log_densities = log_likelihood(fit.mean)
+    log_density = einx.sum("state ->", site_log_densities)
+
+    def estimate(key):
+        return gx.site_log_evidence(fit.site_posterior, log_density, key=key)
+
+    keys = jax.random.split(jax.random.key(1), 64)
+    estimates = jax.vmap(estimate)(keys)
+    assert bool(jnp.std(estimates) > 0.0)
+    assert_within_stderr(estimates, COVARIANCE["bernoulli_log_marginal"])
+
+
+def test_solver_is_validated() -> None:
+    with pytest.raises(ValidationError, match="'solver' must be a gaussx solver"):
+        laplace_mode_covariance(
+            lx.MatrixLinearOperator(jnp.eye(2), _PSD),
+            jnp.zeros(2),
+            _bernoulli(jnp.ones(2)),
+            solver=lx.CG(rtol=1e-6, atol=1e-6),
+        )
+
+
+def test_variance_and_log_marginal_on_request() -> None:
+    prior, prior_mean, log_likelihood = _fixture_problem("poisson")
+    fit = laplace_mode_covariance(
+        prior,
+        prior_mean,
+        log_likelihood,
+        max_iter=50,
+        tol=1e-10,
+        solver=gx.CGSolver(**_TIGHT),
+        with_variance=False,
+        with_log_marginal=False,
+    )
+    assert fit.variance is None
+    assert fit.log_marginal is None
+    # the variances later, from the Gaussian at the mode
+    later = fit.site_posterior.variance(method="exact")
+    assert _relative(later, COVARIANCE["poisson_variance"]) <= 1e-5
+
+
+def _toeplitz_prior(params, size: int, spacing: float, dtype=jnp.float64):
+    """K_XX of a Matérn-3/2 kernel on a regular grid, applied by FFT.
+
+    The Gram matrix of a stationary kernel on a regular grid is Toeplitz, and a
+    product with it is a circular convolution of length 2N, so no N × N array
+    exists. A debug callback counts the products.
+    """
+    variance, lengthscale = params[0], params[1]
+    # τₖ = k h, the lags of the first row
+    lags = spacing * jnp.arange(size, dtype=dtype)
+    # k(τ) = σ² (1 + √3 τ / l) exp(−√3 τ / l), plus jitter at τ = 0
+    scaled = jnp.sqrt(3.0) * lags / lengthscale
+    first_row = variance * (1.0 + scaled) * jnp.exp(-scaled)
+    first_row = first_row.at[0].add(1e-6)
+    # c = (k₀, …, k_{N−1}, 0, k_{N−1}, …, k₁), the circulant embedding
+    reflected = jnp.flip(first_row[1:])
+    gap = jnp.zeros(1, dtype)
+    circulant = jnp.concatenate([first_row, gap, reflected])
+    spectrum = jnp.fft.rfft(circulant)
+    padding = jnp.zeros(size, dtype)
+
+    def matvec(vector):
+        padded = jnp.concatenate([vector, padding])
+        # c ⊛ (v, 0), whose first N entries are K_XX v
+        product = jnp.fft.irfft(spectrum * jnp.fft.rfft(padded), n=2 * size)
+        return product[:size]
+
+    structure = jax.ShapeDtypeStruct((size,), dtype)
+    return lx.FunctionLinearOperator(matvec, structure, _PSD)
+
+
+def _grid_labels(size: int, spacing: float, dtype=jnp.float64):
+    inputs = spacing * jnp.arange(size, dtype=dtype)
+    return (jnp.sin(0.7 * inputs) > 0).astype(dtype)
+
+
+def test_toeplitz_prior_is_the_dense_gram_matrix() -> None:
+    prior = _toeplitz_prior(jnp.array([1.3, 0.8]), 23, 0.25)
+    dense = _matern32_gram(0.25 * np.arange(23), variance=1.3, lengthscale=0.8)
+    vector = jnp.asarray(np.random.default_rng(0).normal(size=23))
+    assert jnp.allclose(prior.mv(vector), dense @ vector, rtol=1e-12)
+
+
+_MATRIX_FREE_SIZE = 53
+
+
+@pytest.mark.parametrize("solver", ["cg", "bbmm"])
+def test_iterative_solver_never_densifies(solver: str, monkeypatch) -> None:
+    calls: list = []
+    original = lx.FunctionLinearOperator.as_matrix
+
+    def counted(self):
+        calls.append(1)
+        return original(self)
+
+    monkeypatch.setattr(lx.FunctionLinearOperator, "as_matrix", counted)
+    size, spacing = _MATRIX_FREE_SIZE, 0.3
+    labels = _bernoulli(_grid_labels(size, spacing))
+    strategy = gx.BBMMSolver(num_probes=4, lanczos_order=10, **_TIGHT)
+    if solver == "cg":
+        strategy = gx.CGSolver(num_probes=4, lanczos_order=10, **_TIGHT)
+
+    def fit(params):
+        return laplace_mode_covariance(
+            _toeplitz_prior(params, size, spacing),
+            jnp.zeros(size),
+            labels,
+            max_iter=50,
+            tol=1e-9,
+            solver=strategy,
+            with_variance=False,
+            key=jax.random.key(0),
+        )
+
+    params = jnp.array([1.3, 0.8])
+    result = fit(params)
+    assert bool(result.converged)
+    assert bool(jnp.isfinite(result.log_marginal))
+    jaxpr = jax.make_jaxpr(lambda params: fit(params).log_marginal)(params).jaxpr
+    assert (size, size) not in _shapes_in(jaxpr)
+    assert calls == []
+
+
+@pytest.mark.parametrize(("solver", "dense"), [(None, True), ("cg", False)])
+@pytest.mark.filterwarnings("ignore::gaussx._primitives._cholesky.DenseFallbackWarning")
+def test_covariance_gradient_forms_no_n_by_n_array(solver, dense: bool) -> None:
+    """With an iterative solver and a matrix-free prior the gradient is
+    matrix-free (the gap #99 left for the covariance form); the dense solver
+    densifies the prior."""
+    size, spacing = _MATRIX_FREE_SIZE, 0.3
+    labels = _bernoulli(_grid_labels(size, spacing))
+    weights = jnp.asarray(np.random.default_rng(2).normal(size=size))
+    strategy = None if solver is None else gx.CGSolver(rtol=1e-12, atol=1e-12)
+
+    def fit(params):
+        return laplace_mode_covariance(
+            _toeplitz_prior(params, size, spacing),
+            jnp.zeros(size),
+            labels,
+            max_iter=50,
+            tol=1e-12,
+            solver=strategy,
+            with_variance=False,
+            with_log_marginal=False,
+        )
+
+    def functional(params):
+        # wᵀ f̂
+        return einx.dot("state, state ->", weights, fit(params).mode)
+
+    params = jnp.array([1.3, 0.8])
+    assert bool(fit(params).converged)
+    jaxpr = jax.make_jaxpr(jax.grad(functional))(params).jaxpr
+    assert ((size, size) in _shapes_in(jaxpr)) is dense
+    # the CG solves stop at 1e-12, so central differences at h = 1e-5 resolve
+    # the gradient to about 1e-7
+    assert_grad_matches_fd(functional, params, eps=1e-5, rtol=1e-6)
+
+
+def test_iterative_log_marginal_gradient_matches_dense() -> None:
+    """The evidence through CG with an exact log-determinant has the dense
+    gradient, and both match central differences."""
+    prior, labels, _ = _matern32_problem()
+    iterative = gx.compose_solver(
+        gx.CGSolver(rtol=1e-12, atol=1e-12), logdet=gx.DenseLogdet()
+    )
+
+    def fit(params, solver):
+        return laplace_mode_covariance(
+            prior(params),
+            jnp.zeros(_GRADIENT_SIZE),
+            _bernoulli(labels),
+            max_iter=100,
+            tol=1e-12,
+            solver=solver,
+            with_variance=False,
+        )
+
+    def log_marginal(params, solver):
+        return fit(params, solver).log_marginal
+
+    assert bool(fit(_PARAMS, iterative).converged)
+    gradient = jax.grad(log_marginal)(_PARAMS, iterative)
+    dense = jax.grad(log_marginal)(_PARAMS, None)
+    assert _relative(gradient, dense) <= 1e-7
+    assert_grad_matches_fd(
+        lambda params: log_marginal(params, iterative), _PARAMS, eps=1e-5, rtol=1e-6
+    )
+
+
+@pytest.mark.parametrize("solver", [None, "cg"])
+def test_covariance_float32_stays_finite_with_a_solver(solver) -> None:
+    """The #91 problem in float32, through each solver: finite throughout."""
+    dtype = jnp.float32
+    inputs = jnp.linspace(0.0, 10.0, 200, dtype=dtype)
+    distances = einx.subtract("row, col -> row col", inputs, inputs)
+    jitter = 1e-6 * jnp.eye(200, dtype=dtype)
+    kernel = jnp.exp(-0.5 * distances**2) + jitter
+    labels = (jnp.sin(inputs) > 0).astype(dtype)
+    prior = lx.MatrixLinearOperator(kernel, _PSD)
+    strategy = None if solver is None else gx.CGSolver(throw=False)
+    fit = laplace_mode_covariance(
+        prior, jnp.zeros(200, dtype), _bernoulli(labels), solver=strategy
+    )
+    for value in (fit.mode, fit.variance, fit.log_marginal):
+        assert value.dtype == jnp.float32
+        assert bool(jnp.all(jnp.isfinite(value)))
+
+
+def test_iterative_solver_runs_under_jit_and_vmap_over_datasets() -> None:
+    size, spacing = _MATRIX_FREE_SIZE, 0.3
+    prior = _toeplitz_prior(jnp.array([1.3, 0.8]), size, spacing)
+    labels = _grid_labels(size, spacing)
+    datasets = jnp.stack([labels, 1.0 - labels, jnp.roll(labels, 7)])
+
+    def fit_one(targets):
+        fit = laplace_mode_covariance(
+            prior,
+            jnp.zeros(size),
+            _bernoulli(targets),
+            max_iter=50,
+            tol=1e-10,
+            solver=gx.CGSolver(**_TIGHT),
+            with_variance=False,
+        )
+        return fit.mode, fit.log_marginal
+
+    batched_mode, batched_evidence = jax.jit(jax.vmap(fit_one))(datasets)
+    looped = [fit_one(targets) for targets in datasets]
+    looped_mode = jnp.stack([mode for mode, _ in looped])
+    looped_evidence = jnp.stack([evidence for _, evidence in looped])
+    # a batched CG runs until every system meets its tolerance of 1e-11
+    assert jnp.allclose(batched_mode, looped_mode, rtol=1e-8, atol=1e-9)
+    assert jnp.allclose(batched_evidence, looped_evidence, rtol=1e-8)
+
+
+@pytest.mark.slow
+def test_slow_20k() -> None:
+    """A fit at N = 20,000: each kernel product is an FFT, and no N × N array
+    (3.2 GB in float64) is ever formed."""
+    size, spacing = 20_000, 0.1
+    products: list = []
+    base = _toeplitz_prior(jnp.array([1.0, 1.0]), size, spacing)
+
+    def counted(vector):
+        jax.debug.callback(lambda _: products.append(1), vector)
+        return base.mv(vector)
+
+    structure = jax.ShapeDtypeStruct((size,), jnp.float64)
+    prior = lx.FunctionLinearOperator(counted, structure, _PSD)
+    labels = _bernoulli(_grid_labels(size, spacing))
+    solver = gx.CGSolver(rtol=1e-9, atol=1e-9)
+
+    @jax.jit
+    def fit():
+        result = laplace_mode_covariance(
+            prior,
+            jnp.zeros(size),
+            labels,
+            max_iter=30,
+            tol=1e-7,
+            solver=solver,
+            with_variance=False,
+            with_log_marginal=False,
+        )
+        return result.mode, result.mean, result.converged, result.n_iter
+
+    mode, mean, converged, n_iter = fit()
+    jax.effects_barrier()
+    assert bool(converged)
+    # at convergence the posterior mean under the sites at f̂ is f̂
+    assert float(jnp.max(jnp.abs(mean - mode))) <= 1e-6
+    # every CG step is one product; a dense solve would take none
+    assert len(products) >= int(n_iter)
+
+
+def test_failed_inner_solve_is_not_converged() -> None:
+    """A CG that stops early must not read as a converged loop.
+
+    With μ_f = 0, K_XX = diag(1, 3) and log p = −½ (f − 1)², the sites are
+    constant (Λ_site = 1, μ_site = 1), so one CG step returns the same wrong
+    target K_XX w = (1/3, 1) every iteration and ‖Δf‖_∞ is zero from the second
+    on; the mode is K_XX (K_XX + I)⁻¹ 1 = (1/2, 3/4).
+    """
+    prior = lx.TaggedLinearOperator(
+        lx.DiagonalLinearOperator(jnp.array([1.0, 3.0])), _PSD
+    )
+
+    def log_likelihood(latent):
+        # log p(y ∣ f) = −½ (f − 1)²
+        return -0.5 * (latent - 1.0) ** 2
+
+    one_step = gx.CGSolver(max_steps=1, throw=False)
+    fit = laplace_mode_covariance(prior, jnp.zeros(2), log_likelihood, solver=one_step)
+    assert not bool(fit.converged)
+    exact = laplace_mode_covariance(prior, jnp.zeros(2), log_likelihood)
+    assert bool(exact.converged)
+    assert jnp.allclose(exact.mode, jnp.array([0.5, 0.75]), rtol=1e-12)
+    # with enough steps the same solver converges to the mode
+    enough = gx.CGSolver(throw=False, **_TIGHT)
+    solved = laplace_mode_covariance(prior, jnp.zeros(2), log_likelihood, solver=enough)
+    assert bool(solved.converged)
+    assert jnp.allclose(solved.mode, exact.mode, rtol=1e-9)

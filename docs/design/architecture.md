@@ -149,7 +149,7 @@ Who imports argminax today, with the modules each uses, and what argminax builds
 | `equinox` | yes | solvers, adjoints, operators and results as modules |
 | `lineax` | yes | linear solves, operator types and the structure tags |
 | `optimistix` | yes, pinned to `>=0.1.0,<0.2` | `minimise`, `least_squares`, the solver and adjoint protocols, `RESULTS` |
-| `gaussx` | yes, pinned to the tag `v0.8.2` | structured operators, solves, log-determinants and one step's algebra |
+| `gaussx` | yes, pinned to the tag `v0.8.3` | structured operators, solves, log-determinants and one step's algebra |
 | `einx` | yes | reductions, contractions and rearranges on dense arrays |
 | `jaxtyping` | yes | array annotations with named dimensions |
 | `optax` | the `optax` extra | the `GradientTransformation` protocol, schedules and `optax.chain` for `argminax.blr` |
