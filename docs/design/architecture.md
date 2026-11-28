@@ -7,7 +7,7 @@ argminax is one package, `src/argminax/`. The logic lives in `argminax._src.<mod
 The figure below lists what each area imports, and its arrows read "imports". Dependencies point one way, so nothing at the bottom knows about anything above it.
 
 ```{figure} https://raw.githubusercontent.com/jejjohnson/geostack/main/docs/images/libraries/argminax_imports/argminax_imports-light.svg
-:alt: argminax's five public modules and what each imports: diagnose (gaussx, lineax, and matfree through an extra), solve (optimistix, gaussx, lineax, and numpyro through an extra) and blr (gaussx, lineax, and optax through an extra) each import curvature, which imports gaussx and lineax; adjoint imports only optimistix
+:alt: argminax's five public modules and what each imports: diagnose (gaussx, lineax, and matfree through an extra), solve (optimistix, gaussx and lineax) and blr (gaussx, lineax, and optax through an extra) each import curvature, which imports gaussx and lineax; adjoint imports only optimistix
 :width: 100%
 :label: fig-imports
 
@@ -149,12 +149,11 @@ Who imports argminax today, with the modules each uses, and what argminax builds
 | `equinox` | yes | solvers, adjoints, operators and results as modules |
 | `lineax` | yes | linear solves, operator types and the structure tags |
 | `optimistix` | yes, pinned to `>=0.1.0,<0.2` | `minimise`, `least_squares`, the solver and adjoint protocols, `RESULTS` |
-| `gaussx` | yes, pinned to the tag `v0.6.13` | structured operators, solves, log-determinants and one step's algebra |
+| `gaussx` | yes, pinned to the tag `v0.8.2` | structured operators, solves, log-determinants and one step's algebra |
 | `einx` | yes | reductions, contractions and rearranges on dense arrays |
 | `jaxtyping` | yes | array annotations with named dimensions |
 | `optax` | the `optax` extra | the `GradientTransformation` protocol, schedules and `optax.chain` for `argminax.blr` |
 | `matfree` | the `matfree` extra | stochastic Lanczos quadrature for log-determinants of large operators |
-| `numpyro` | the `numpyro` extra | the GMRF priors of the precision form of `laplace_mode` |
 
 optimistix is pinned to one minor version because `KStep.apply` reads the private layout of its solve inputs. gaussx was an optional extra of optax_bayes and is a hard dependency here.
 

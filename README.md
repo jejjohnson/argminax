@@ -103,7 +103,7 @@ argminax is not on PyPI; the stack pins it by git tag. It brings in JAX, Equinox
 pip install "argminax @ git+https://github.com/jejjohnson/argminax.git"
 ```
 
-Three extras add the rest: `optax` for the transforms of `argminax.blr`, `matfree` for stochastic Lanczos quadrature of the log-determinant of a large operator, and `numpyro` for the GMRF priors of `laplace_mode` (gaussx exports them only when numpyro is installed). Each is imported only when a function needs it, which raises `MissingExtraError` naming the extra when it is missing.
+Two extras add the rest: `optax` for the transforms of `argminax.blr` and `matfree` for stochastic Lanczos quadrature of the log-determinant of a large operator. Each is imported only when a function needs it, which raises `MissingExtraError` naming the extra when it is missing.
 
 ```bash
 pip install "argminax[optax] @ git+https://github.com/jejjohnson/argminax.git"

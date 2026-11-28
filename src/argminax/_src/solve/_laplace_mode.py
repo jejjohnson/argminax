@@ -26,7 +26,7 @@ import lineax as lx
 from jaxtyping import Array, ArrayLike, Bool, Float, Int
 
 from argminax._src.curvature import Laplace
-from argminax.exceptions import MissingExtraError, ValidationError
+from argminax.exceptions import ValidationError
 
 
 __all__ = [
@@ -193,16 +193,6 @@ class LaplaceModeResult(eqx.Module):
         return Laplace(self.mode, precision)
 
 
-def _require_gmrf_step() -> None:
-    """Raise `MissingExtraError` unless gaussx exports its GMRF Laplace step."""
-    if not hasattr(gx, "laplace_model"):
-        msg = (
-            "laplace_mode's precision form needs the 'numpyro' extra, for "
-            "gaussx's GMRF priors and Laplace step: pip install 'argminax[numpyro]'"
-        )
-        raise MissingExtraError(msg)
-
-
 def _damped_newton(
     target: Callable[[Float[Array, " state"]], Float[Array, " state"]],
     start: Float[Array, " state"],
@@ -331,7 +321,6 @@ def laplace_mode(
 
     Raises:
         ValidationError: If ``max_iter``, ``tol`` or ``damping`` is out of range.
-        MissingExtraError: If the ``numpyro`` extra is not installed.
 
     Examples:
         Poisson counts on an independent Gaussian prior:
@@ -365,7 +354,6 @@ def laplace_mode(
         ValidationError: 'damping' must lie in (0, 1], got 0.0
     """
     _validate(max_iter, tol, damping)
-    _require_gmrf_step()
 
     # --- the model and its start ---
     model = gx.laplace_model(prior, likelihood, projector=projector, offset=offset)
