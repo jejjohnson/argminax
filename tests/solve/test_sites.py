@@ -234,6 +234,15 @@ def test_ep_fixed_point_in_float32() -> None:
 
 def _evidence_like(scale, damping: float = 0.5, method: str = "ep"):
     """A scalar of the fixed point that depends on the kernel scale."""
+    return _evidence_and_convergence(scale, damping, method)[0]
+
+
+def _assert_converged(scale, damping: float = 0.5, method: str = "ep") -> None:
+    """The fit a gradient goes through converged (checked before the gradient)."""
+    assert bool(_evidence_and_convergence(scale, damping, method)[1])
+
+
+def _evidence_and_convergence(scale, damping: float, method: str):
     kernel = scale[0] * jnp.asarray(DATA["dense_K"])
     prior_mean = jnp.asarray(DATA["dense_mean"])
     args = (kernel, prior_mean, jnp.asarray(DATA["bernoulli_y"]))
@@ -245,11 +254,12 @@ def _evidence_like(scale, damping: float = 0.5, method: str = "ep"):
         tol=1e-12,
     )
     mean, variance = _posterior(kernel, prior_mean, *fit.sites)
-    return jnp.sum(jnp.sin(mean)) + jnp.sum(jnp.log(variance))
+    return jnp.sum(jnp.sin(mean)) + jnp.sum(jnp.log(variance)), fit.converged
 
 
 @pytest.mark.parametrize("method", ["ep", "pl"])
 def test_gradient_matches_finite_differences(method: str) -> None:
+    _assert_converged(jnp.array([1.3]), method=method)
     assert_grad_matches_fd(
         lambda scale: _evidence_like(scale, method=method), jnp.array([1.3]), rtol=1e-5
     )
@@ -257,6 +267,8 @@ def test_gradient_matches_finite_differences(method: str) -> None:
 
 def test_gradient_independent_of_damping() -> None:
     scale = jnp.array([1.3])
+    _assert_converged(scale, damping=0.3)
+    _assert_converged(scale, damping=0.8)
     slow = jax.grad(lambda scale: _evidence_like(scale, damping=0.3))(scale)
     fast = jax.grad(lambda scale: _evidence_like(scale, damping=0.8))(scale)
     assert _relative(slow, fast) <= 1e-6
@@ -314,12 +326,19 @@ def test_recursive_checkpoint_adjoint_gives_the_same_gradient() -> None:
         return 0.5 * sites + 0.5 * (0.3 * sites + theta)
 
     def total(theta, adjoint):
-        fit = site_fixed_point(update, jnp.zeros(2), theta, tol=1e-12, adjoint=adjoint)
-        return jnp.sum(fit.sites**2)
+        # T contracts by 0.65 a step: about 70 steps reach tol = 1e-12
+        fit = site_fixed_point(
+            update, jnp.zeros(2), theta, max_iter=200, tol=1e-12, adjoint=adjoint
+        )
+        return jnp.sum(fit.sites**2), fit.converged
 
     theta = jnp.array([1.0, -2.0])
-    implicit = jax.grad(total)(theta, None)
-    unrolled = jax.grad(total)(theta, optx.RecursiveCheckpointAdjoint())
+    implicit, implicit_converged = jax.grad(total, has_aux=True)(theta, None)
+    unrolled, unrolled_converged = jax.grad(total, has_aux=True)(
+        theta, optx.RecursiveCheckpointAdjoint()
+    )
+    assert bool(implicit_converged)
+    assert bool(unrolled_converged)
     assert jnp.allclose(implicit, unrolled, rtol=1e-8)
 
 
