@@ -27,6 +27,7 @@ import optimistix as optx
 from jaxtyping import Array, ArrayLike, Bool, Float, Int
 
 from argminax._src.curvature import Laplace
+from argminax._src.solve._tolerant import TolerantLinearSolver
 from argminax.exceptions import ValidationError
 
 
@@ -157,6 +158,82 @@ def _resolve_adjoint(
     return adjoint
 
 
+class _NewtonGuessSolver(lx.AbstractLinearSolver):
+    """Solve (J_T − I) v = b by first trying v = −b, exact when J_T = 0.
+
+        r = b − (J_T − I)(−b) = J_T b
+        v = −b               if |rᵢ| ≤ atol + rtol |bᵢ| for every i
+        v = inner(b)         otherwise, started from −b
+
+    One product checks the guess; ``inner`` runs only when it is not within
+    the tolerance of ``inner`` itself. It is a lineax solver, so lineax keeps
+    treating the solve as linear in b when it transposes or differentiates it.
+
+    Attributes:
+        inner: The iterative solver for the system.
+        rtol: Its relative tolerance.
+        atol: Its absolute tolerance.
+    """
+
+    inner: lx.AbstractLinearSolver
+    rtol: float = eqx.field(static=True)
+    atol: float = eqx.field(static=True)
+
+    def init(self, operator: lx.AbstractLinearOperator, options: dict[str, Any]) -> Any:
+        return operator, self.inner.init(operator, options)
+
+    def compute(
+        self, state: Any, vector: Array, options: dict[str, Any]
+    ) -> tuple[Array, lx.RESULTS, dict[str, Any]]:
+        operator, inner_state = state
+        # v = −b, exact when J_T = 0
+        guess = -vector
+        # r = b − (J_T − I)(−b) = J_T b
+        residual = vector - operator.mv(guess)
+        # atol + rtol |bᵢ|, the inner solver's own scale
+        scale = self.atol + self.rtol * jnp.abs(vector)
+        accepted = _sup_norm(residual / scale) <= 1.0
+
+        def keep_guess(_: None) -> tuple[Array, lx.RESULTS]:
+            return guess, lx.RESULTS.successful
+
+        def solve(_: None) -> tuple[Array, lx.RESULTS]:
+            started = {**options, "y0": guess}
+            solution, result, _ = self.inner.compute(inner_state, vector, started)
+            return solution, result
+
+        solution, result = jax.lax.cond(accepted, keep_guess, solve, None)
+        return solution, result, {}
+
+    def transpose(self, state: Any, options: dict[str, Any]) -> Any:
+        operator, inner_state = state
+        inner_transposed, inner_options = self.inner.transpose(inner_state, options)
+        return (operator.transpose(), inner_transposed), inner_options
+
+    def conj(self, state: Any, options: dict[str, Any]) -> Any:
+        operator, inner_state = state
+        inner_conjugated, inner_options = self.inner.conj(inner_state, options)
+        return (operator.conj(), inner_conjugated), inner_options
+
+    def assume_full_rank(self) -> bool:
+        return self.inner.assume_full_rank()
+
+
+def _tangent_solver(solver: lx.AbstractLinearSolver) -> lx.AbstractLinearSolver:
+    """The adjoint's solver, behind the guess v = −b when it is iterative.
+
+    An iterative lineax solver is recognised by its ``rtol`` and ``atol``
+    (through a `TolerantLinearSolver`); a direct solver is exact and is used
+    as it is.
+    """
+    inner = solver.inner if isinstance(solver, TolerantLinearSolver) else solver
+    rtol = getattr(inner, "rtol", None)
+    atol = getattr(inner, "atol", None)
+    if rtol is None or atol is None:
+        return solver
+    return _NewtonGuessSolver(solver, rtol, atol)
+
+
 def _implicit_fixed_point(
     update: Callable[[Float[Array, " state"]], Float[Array, " state"]],
     estimate: Float[Array, " state"],
@@ -164,16 +241,18 @@ def _implicit_fixed_point(
 ) -> Float[Array, " state"]:
     """Attach implicit tangents to a fixed point f̂ = μ_f∣y(f̂).
 
-        ∂f̂/∂θ = (I − ∂μ_f∣y/∂f)⁻¹ ∂μ_f∣y/∂θ
+        ∂f̂/∂θ = (I − J_T)⁻¹ ∂μ_f∣y/∂θ,   J_T = ∂μ_f∣y/∂f
 
     μ_f∣y(f) is ``update``: the posterior mean under the sites at f, with θ
-    every array it closes over. The root is μ_f∣y(f) − f; its Jacobian is not
-    symmetric in general, so the tangent solve goes to the adjoint's linear
-    solver, given only products with the Jacobian (GMRES by default). For an
-    exact Newton map ∂μ_f∣y/∂f = 0 at the mode, so the system is −I and GMRES
-    stops after its first product; floored sites make it a quasi-Newton map,
-    whose Jacobian is small but not zero.
+    every array it closes over. The root is μ_f∣y(f) − f, whose Jacobian
+    J_T − I is not symmetric in general, so each tangent solve goes to the
+    adjoint's linear solver, given only products with the Jacobian (GMRES by
+    default). For an exact Newton map J_T = 0 at the mode, so an iterative
+    solver is first offered v = −b and runs only when that guess misses its
+    tolerance (`_NewtonGuessSolver`): floored sites make the map
+    quasi-Newton, with J_T small but not zero.
     """
+    solver = _tangent_solver(adjoint.linear_solver)
 
     def root(state: Float[Array, " state"]) -> Float[Array, " state"]:
         # μ_f∣y(f) − f
@@ -182,7 +261,7 @@ def _implicit_fixed_point(
     def tangent_solve(matvec: Callable, vector: Float[Array, " state"]) -> Array:
         structure = jax.eval_shape(lambda: vector)
         operator = lx.FunctionLinearOperator(matvec, structure)
-        solution = lx.linear_solve(operator, vector, adjoint.linear_solver)
+        solution = lx.linear_solve(operator, vector, solver)
         return solution.value
 
     frozen_estimate = jax.lax.stop_gradient(estimate)
