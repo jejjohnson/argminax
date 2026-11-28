@@ -57,7 +57,7 @@ def _default_adjoint() -> optx.ImplicitAdjoint:
 def _floored_tolerance(tol: float, sites: PyTree[Array]) -> float:
     """tol, floored at 64 machine epsilons of the sites' dtype."""
     leaves = jtu.tree_leaves(eqx.filter(sites, eqx.is_inexact_array))
-    dtype = jnp.result_type(*leaves) if leaves else jnp.float64
+    dtype = jnp.result_type(*leaves)
     # a host constant, so the floor also works under jit
     epsilon = float(jnp.finfo(dtype).eps)
     return max(tol, 64.0 * epsilon)

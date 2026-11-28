@@ -1,0 +1,9 @@
+# pyrox site fixed-point fixture
+
+`pyrox_sites.npz` holds pyrox's site fixed points, so `tests/solve/test_sites.py` can check `site_fixed_point` (#100) against the code it replaces without importing pyrox, which sits above argminax.
+
+- pyrox at `439b963` (`origin/main`, 28 November 2026), float64, JAX 0.10.2.
+- Markov (`markov_*`): pyrox-ssm's `PosteriorLinearizationMarkov` (defaults: `tol=1e-6`, `max_iter=30`, damping 0.5) on 16 times on [0, 4], labels cos(1.5 t) > 0 with the sixth time masked, a Matern-3/2 SDE (`order=1`) with lengthscale 0.6. `markov_start_*` are the sites after the first update from the prior marginals, as `_fit_cavity_sites` makes them; `markov_step` is pyrox's `_step` with its arguments closed over, exported with `jax.export` (serialised bytes, `uint8`), so argminax runs pyrox's own step; `markov_nat1`, `markov_nat2`, `markov_n_steps` and `markov_converged` are `_solve_sites` on that exported step, and `markov_native_*` the same call on the native step (they agree exactly, as does `fit`). `markov_observed` is the mask.
+- Dense (`ep_*`, `pl_*`): pyrox-gp's eager `ExpectationPropagation` and `PosteriorLinearization` with `max_iter=500`, `tol=1e-12` (their test on the posterior mean) and the default damping 0.5, Gauss–Hermite of order 20 and floor 1e-6, on 12 points on [−3, 3] with an RBF kernel of unit lengthscale and variance (`dense_K`, jitter included; `dense_mean`). `bernoulli_y` are the labels sin(x) > 0, `poisson_y` the counts ⌊exp(1 + sin x)⌋; `<likelihood>_probe_*` are pyrox's per-point log-densities at a few points, so the test can check its own.
+
+Regenerate with `make_pyrox_sites_fixture.py`; its docstring gives the `uv run` command, which runs it with pyrox's environment (plus `cyclopts`, `loguru` and `flatbuffers`) on a pyrox source tree (`git archive origin/main packages | tar -x -C <dir>`).

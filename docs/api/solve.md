@@ -4,6 +4,8 @@ Solvers optimistix lacks, each an optimistix solver called through `optx.minimis
 
 The covariance and site forms of the Laplace loop (`laplace_mode_covariance`, `laplace_mode_sites`) differentiate their mode implicitly, through `adjoint=`. The default, `safe_implicit_adjoint(lx.GMRES(rtol=1e-8, atol=1e-8, restart=20, max_steps=50))`, solves the tangent system from products with the Jacobian of the fixed-point map, so no N × N matrix is formed, and a failed solve returns a value instead of raising. To change it, pass any `optx.ImplicitAdjoint`: a tighter GMRES for a hard problem, or `optx.ImplicitAdjoint(lx.AutoLinearSolver(well_posed=True))` for the dense LU used before.
 
+`site_fixed_point` is the loop over Gaussian sites that is not a Newton method: expectation propagation and posterior linearisation iterate a damped site update s ← T(s) to a fixed point, and their gradient comes from the implicit function theorem at that point (by default `safe_implicit_adjoint(lx.GMRES(rtol=1e-10, atol=1e-10, restart=20, max_steps=50))`, from products alone). The split is that the loop and its gradient are argminax's, and one update is the caller's, built from gaussx's site primitives (`gaussx.cavity_distribution`, `gaussx.ep_tilted_moments`, `gaussx.newton_update`, `gaussx.damped_natural_update`). Damping, precision floors, step caps and the first-iteration special case of cavity methods stay in the update, since they differ between strategies.
+
 ::: argminax.solve
     options:
       show_root_heading: true
