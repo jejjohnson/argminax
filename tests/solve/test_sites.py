@@ -58,9 +58,10 @@ def test_matches_markov_fixture() -> None:
         tol=float(DATA["markov_tol"]),
     )
     assert isinstance(fit, SiteFixedPoint)
-    # bit for bit: the same loop on the same step
-    assert np.array_equal(fit.sites[0], DATA["markov_nat1"])
-    assert np.array_equal(fit.sites[1], DATA["markov_nat2"])
+    # the same loop on the same step: bit for bit on the machine that froze
+    # it, but the release job's runner differed in the last bits, so 1e-9
+    np.testing.assert_allclose(fit.sites[0], DATA["markov_nat1"], rtol=1e-9, atol=0)
+    np.testing.assert_allclose(fit.sites[1], DATA["markov_nat2"], rtol=1e-9, atol=0)
     assert int(fit.n_iter) == int(DATA["markov_n_steps"])
     assert bool(fit.converged) == bool(DATA["markov_converged"])
     # the exported step is pyrox's step: its native run gave the same sites
